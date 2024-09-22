@@ -140,8 +140,17 @@
     <ResourceCompile Include="RebornLauncher.rc" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="24x24 logo.png" />
+    <Image Include="icon1.ico" />
+    <Image Include="Pig\01.png" />
+    <Image Include="Pig\02.png" />
+    <Image Include="Pig\03.png" />
+    <Image Include="Pig\04.png" />
+    <Image Include="Pig\05.png" />
+    <Image Include="Pig\06.png" />
+    <Image Include="Pig\07.png" />
     <Image Include="RebornLauncher.ico" />
-    <Image Include="small.ico" />
+    <Image Include="UI\logo1 透明底.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

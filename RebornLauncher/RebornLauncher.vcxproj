@@ -141,7 +141,6 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="24x24 logo.png" />
-    <Image Include="icon1.ico" />
     <Image Include="Pig\01.png" />
     <Image Include="Pig\02.png" />
     <Image Include="Pig\03.png" />

@@ -3,6 +3,9 @@
 
 #include "framework.h"
 #include "RebornLauncher.h"
+
+#include <corecrt_math.h>
+
 #include "LauncherMainDlg.h"
 #include <objidl.h>
 #include <gdiplus.h>
@@ -29,6 +32,10 @@ ULONG_PTR g_gdiplusToken = 0;
 HBITMAP g_hBitmap = NULL;
 HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
+// 窗口当前位置
+POINT g_ptWindow = { 0, 0 };
+// 窗口大小
+constexpr SIZE g_szWindow = { 500, 500 };
 
 //猪的纹理 系列帧
 Gdiplus::Bitmap *g_hPigBitmap[7] = { NULL };
@@ -143,9 +150,19 @@ void OnDraw(HDC hdc,const RECT &rect)
 	// graphics.DrawImage(g_hBkBitmap, (INT)(rect.right - nWidth) / 2, (INT)(rect.bottom - nHeight) / 2);
         // 透明度参数
     static int alpha = 0;
+    static int colorChange = 0;
     static int alphaDirection = 5;  // 控制透明度的增减方向
     const int maxAlpha = 255;  // 透明度最大值
     const int minAlpha = 150;   // 透明度最小值
+    static int colorDirection = 5;  // 控制颜色变化的增减方向
+
+    // 进度条的参数
+    static float progress = 0.0f;    // 当前进度条的进度（从0%到100%）
+    const float progressSpeed = 0.00005f;  // 控制进度条前进的速度
+
+    // 更新进度条进度
+    progress += progressSpeed;
+    if (progress > 1.0f) progress = 1.0f;  // 进度最大为100%
 
     // 每1秒一次透明度变化
     static DWORD lastAlphaTime = 0;
@@ -166,15 +183,65 @@ void OnDraw(HDC hdc,const RECT &rect)
         {
             alpha = 255;
         }
+
+        // 更新颜色变化
+        if (colorChange > 255) {
+            colorDirection = -5;
+        }
+        if (colorChange < 0) {
+            colorDirection = 5;
+        }
+        colorChange += colorDirection;
     }
-    // 半透明渲染
-	ColorMatrix colorMatrix = {
-		1
-	};
-	colorMatrix.m[3][3] = alpha / 255.0f; // 透明度
-	ImageAttributes imageAttributes;
-	imageAttributes.SetColorMatrix(&colorMatrix, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
-	graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributes);
+
+    // 左边已经停止呼吸的区域
+    int progressBarWidth = (int)(rect.right * progress);  // 计算已经不呼吸的区域的宽度
+    GraphicsPath path;
+    path.AddRectangle(Rect(0, 0, progressBarWidth, rect.bottom)); // 左侧不呼吸区域
+    Region nonBreathingRegion(&path);  // 非呼吸区域
+    
+    // 半透明和颜色渐变的渲染
+    ColorMatrix colorMatrixBreathing = {
+        1, 0, 0, 0, 0,
+        0, 1, 0, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 0, alpha / 255.0f, 0,
+        0, 0, 0, 0, 1
+    };
+
+    ColorMatrix colorMatrixNonBreathing = {
+        1, 0, 0, 0, 0,
+        0, 1, 0, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 0, maxAlpha / 255.0f, 0, // 完全不透明
+        0, 0, 0, 0, 1
+    };
+    
+    // 为RGB颜色增加渐变效果
+    colorMatrixBreathing.m[0][0] = (255 - colorChange) / 255.0f; // Red
+    colorMatrixBreathing.m[1][1] = (colorChange) / 255.0f;       // Green
+    colorMatrixBreathing.m[2][2] = (128 + colorChange) / 255.0f; // Blue
+    
+    // 设置呼吸和非呼吸的颜色矩阵
+    ImageAttributes imageAttributesBreathing;
+    imageAttributesBreathing.SetColorMatrix(&colorMatrixBreathing, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
+
+
+    ImageAttributes imageAttributesNonBreathing;
+    imageAttributesNonBreathing.SetColorMatrix(&colorMatrixNonBreathing, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
+
+    // 绘制已经停止呼吸的区域
+    graphics.SetClip(&nonBreathingRegion, CombineModeReplace); // 限制绘制区域
+    graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributesNonBreathing);
+    
+    // 绘制仍然在呼吸的区域
+    Region breathingRegion(Rect(progressBarWidth, 0, rect.right - progressBarWidth, rect.bottom)); // 剩下的呼吸区域
+    graphics.SetClip(&breathingRegion, CombineModeReplace); // 切换到呼吸区域
+    graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributesBreathing);
+
+
+    // 清除剪辑
+    graphics.ResetClip();
 
 
 	// 用GDI + 绘制猪的帧率 大概是0.1s一帧 
@@ -188,9 +255,24 @@ void OnDraw(HDC hdc,const RECT &rect)
         lastTime = currentTime;
     }
 
+    // 猪的旋转相关
+    static float angle = 0.0f;   // 当前的旋转角度
+    const float radius = 100.0f; // 旋转半径，设定为100
+    const float centerX = (rect.right - nWidth) / 2.0f;  // 中心点 X
+    const float centerY = (rect.bottom - nHeight) / 2.0f; // 中心点 Y
+
+    // 每帧增加角度
+    const float rotationSpeed = 0.01f;  // 调整这个值控制旋转速度，数值越小速度越慢
+    angle += rotationSpeed;  
+    if (angle >= 360.0f) angle -= 360.0f;
+
+    // 计算猪的当前位置 (x, y)
+    float pigX = centerX + radius * cosf(angle * 3.14159265f / 180.0f);
+    float pigY = centerY + radius * sinf(angle * 3.14159265f / 180.0f) - 100;
+
     if (g_hPigBitmap[frame]) {
         // 将当前帧绘制到窗口
-        graphics.DrawImage(g_hPigBitmap[frame], 0, 0);  // 你可以指定 x, y 坐标
+        graphics.DrawImage(g_hPigBitmap[frame], pigX,pigY);  // 你可以指定 x, y 坐标
     }
 }
 
@@ -218,8 +300,7 @@ void UpdateLoadingAnimation(HWND hWnd)
     // 获取当前窗口在桌面的位置
 	//RECT windowRect;
  //   GetWindowRect(GetDesktopWindow(), &windowRect);
-    RECT rect;
-	GetWindowRect(GetDesktopWindow(), &rect);
+    RECT rect = { 0, 0, g_szWindow.cx, g_szWindow.cy };
 
     HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, rect.right, rect.bottom);
     SelectObject(hdcMem, hBitmap);
@@ -241,7 +322,7 @@ void UpdateLoadingAnimation(HWND hWnd)
     POINT ptSrc = { 0, 0 };
 
     // 使用 UpdateLayeredWindow 来更新整个窗口
-    UpdateLayeredWindow(hWnd, hdcScreen, &ptPos, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
+    UpdateLayeredWindow(hWnd, hdcScreen, &g_ptWindow, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
     // 释放资源
     DeleteObject(hBitmap);
@@ -269,10 +350,9 @@ void SetLayeredWindow(HWND hwnd, HBITMAP hBitmap) {
     // 窗口移到最中间
 	RECT rect;
 	GetWindowRect(hwnd, &rect);
-	int x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
-	int y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
-	POINT ptPos = { x, y };
-    UpdateLayeredWindow(hwnd, hdcScreen, &ptPos, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
+	g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
+	g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
+    UpdateLayeredWindow(hwnd, hdcScreen, &g_ptWindow, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
     // 释放资源
     DeleteDC(hdcMem);
@@ -392,11 +472,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    // SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
    // 置顶并移到最中间
-   RECT rect;
-   GetWindowRect(hWnd, &rect);
-   int x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
-   int y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
-   SetWindowPos(hWnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+   g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - 300) / 2;
+   g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - 300) / 2;
+   SetWindowPos(hWnd, HWND_TOPMOST, g_ptWindow.x, g_ptWindow.y, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
 
    ShowWindow(hWnd, nCmdShow);
@@ -476,6 +554,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             EndPaint(hWnd, &ps);
         }
         break;
+        case WM_MOVE:
+        {
+            // 获取窗口当前位置
+            g_ptWindow.x = LOWORD(lParam);
+            g_ptWindow.y = HIWORD(lParam);
+            break;
+        }
     case WM_DESTROY:
         PostQuitMessage(0);
         break;

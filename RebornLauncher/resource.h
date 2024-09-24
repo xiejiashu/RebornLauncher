@@ -23,6 +23,17 @@
 #define IDB_PIG7                        138
 #define IDB_PNG1                        139
 #define IDB_UI1                         139
+#define IDB_LSL_JUMP0                   140
+#define IDB_LSL_MOVE0                   141
+#define IDB_LSL_MOVE1                   142
+#define IDB_LSL_MOVE2                   143
+#define IDB_LSL_MOVE3                   144
+#define IDB_LSL_MOVE4                   145
+#define IDB_LSL_MOVE5                   146
+#define IDB_LSL_MOVE6                   147
+#define IDB_LSL_STAND0                  148
+#define IDB_LSL_STAND1                  149
+#define IDB_LSL_STAND2                  150
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -30,7 +41,7 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        140
+#define _APS_NEXT_RESOURCE_VALUE        151
 #define _APS_NEXT_COMMAND_VALUE         32771
 #define _APS_NEXT_CONTROL_VALUE         1000
 #define _APS_NEXT_SYMED_VALUE           110

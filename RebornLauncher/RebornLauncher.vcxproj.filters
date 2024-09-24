@@ -30,12 +30,42 @@
     <ClInclude Include="LauncherMainDlg.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="Sprite.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Unit.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Frame.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="SpriteManager.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ResourceManager.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="RebornLauncher.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="LauncherMainDlg.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Sprite.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Unit.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Frame.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="SpriteManager.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ResourceManager.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
@@ -48,34 +78,61 @@
     <Image Include="RebornLauncher.ico">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="24x24 logo.png">
+    <Image Include="Texture\GreenWaterSpirit\jump.0.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="icon1.ico">
+    <Image Include="Texture\GreenWaterSpirit\move.0.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\01.png">
+    <Image Include="Texture\GreenWaterSpirit\move.1.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\02.png">
+    <Image Include="Texture\GreenWaterSpirit\move.2.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\03.png">
+    <Image Include="Texture\GreenWaterSpirit\move.3.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\04.png">
+    <Image Include="Texture\GreenWaterSpirit\move.4.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\05.png">
+    <Image Include="Texture\GreenWaterSpirit\move.5.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\06.png">
+    <Image Include="Texture\GreenWaterSpirit\move.6.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="Pig\07.png">
+    <Image Include="Texture\GreenWaterSpirit\stand.0.png">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="UI\logo1 透明底.png">
+    <Image Include="Texture\GreenWaterSpirit\stand.1.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\GreenWaterSpirit\stand.2.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\01.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\02.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\03.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\04.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\05.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\06.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\PiaoPiaoPig\07.png">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="Texture\UI\Background.png">
       <Filter>资源文件</Filter>
     </Image>
   </ItemGroup>

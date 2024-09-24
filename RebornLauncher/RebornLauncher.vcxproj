@@ -126,30 +126,50 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Frame.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="LauncherMainDlg.h" />
     <ClInclude Include="RebornLauncher.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="ResourceManager.h" />
+    <ClInclude Include="Sprite.h" />
+    <ClInclude Include="SpriteManager.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="Unit.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Frame.cpp" />
     <ClCompile Include="LauncherMainDlg.cpp" />
     <ClCompile Include="RebornLauncher.cpp" />
+    <ClCompile Include="ResourceManager.cpp" />
+    <ClCompile Include="Sprite.cpp" />
+    <ClCompile Include="SpriteManager.cpp" />
+    <ClCompile Include="Unit.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="RebornLauncher.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="24x24 logo.png" />
-    <Image Include="Pig\01.png" />
-    <Image Include="Pig\02.png" />
-    <Image Include="Pig\03.png" />
-    <Image Include="Pig\04.png" />
-    <Image Include="Pig\05.png" />
-    <Image Include="Pig\06.png" />
-    <Image Include="Pig\07.png" />
     <Image Include="RebornLauncher.ico" />
-    <Image Include="UI\logo1 透明底.png" />
+    <Image Include="Texture\GreenWaterSpirit\jump.0.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.0.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.1.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.2.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.3.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.4.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.5.png" />
+    <Image Include="Texture\GreenWaterSpirit\move.6.png" />
+    <Image Include="Texture\GreenWaterSpirit\stand.0.png" />
+    <Image Include="Texture\GreenWaterSpirit\stand.1.png" />
+    <Image Include="Texture\GreenWaterSpirit\stand.2.png" />
+    <Image Include="Texture\PiaoPiaoPig\01.png" />
+    <Image Include="Texture\PiaoPiaoPig\02.png" />
+    <Image Include="Texture\PiaoPiaoPig\03.png" />
+    <Image Include="Texture\PiaoPiaoPig\04.png" />
+    <Image Include="Texture\PiaoPiaoPig\05.png" />
+    <Image Include="Texture\PiaoPiaoPig\06.png" />
+    <Image Include="Texture\PiaoPiaoPig\07.png" />
+    <Image Include="Texture\UI\Background.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

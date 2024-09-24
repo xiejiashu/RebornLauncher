@@ -10,6 +10,12 @@
 #include <objidl.h>
 #include <gdiplus.h>
 
+#include "Frame.h"
+#include "Unit.h"
+#include "Sprite.h"
+#include "SpriteManager.h"
+#include "ResourceManager.h"
+
 
 #pragma comment (lib,"Gdiplus.lib")
 
@@ -33,13 +39,19 @@ HBITMAP g_hBitmap = NULL;
 HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
 // 窗口当前位置
-POINT g_ptWindow = { 0, 0 };
+POINT g_ptWindow = { 831, 455 };
 // 窗口大小
-constexpr SIZE g_szWindow = { 500, 500 };
+constexpr SIZE g_szWindow = { 1024, 768 };
+
+// 进度条进度
+float g_fProgressTotal = 0.0;
 
 //猪的纹理 系列帧
-Gdiplus::Bitmap *g_hPigBitmap[7] = { NULL };
+// Gdiplus::Bitmap *g_hPigBitmap[7] = { NULL };
 Gdiplus::Bitmap* g_hBkBitmap = nullptr;
+
+SpriteManager* g_pSpriteMgr = nullptr;
+ResourceManager* g_pResMgr = nullptr;
 
 // 初始化 GDI+
 void InitGDIPlus(ULONG_PTR& gdiplusToken) {
@@ -92,54 +104,7 @@ HBITMAP LoadImageFromResource(UINT resId) {
     return hBitmap;
 }
 
-// 从资源中加载 PNG 到 GDI+ 的 Bitmap
-Gdiplus::Bitmap* LoadPngFromResource(UINT resId) {
-    Gdiplus::Bitmap* pBitmap = nullptr;
 
-    // 1. 查找资源
-    HRSRC hResource = FindResource(g_hInstance, MAKEINTRESOURCE(resId), L"PNG");
-    if (!hResource) {
-        return nullptr;  // 未找到资源
-    }
-
-    // 2. 获取资源大小并加载资源
-    DWORD imageSize = SizeofResource(g_hInstance, hResource);
-    HGLOBAL hGlobal = LoadResource(g_hInstance, hResource);
-    if (!hGlobal) {
-        return nullptr;
-    }
-
-    // 3. 锁定资源获取指向 PNG 数据的指针
-    void* pResourceData = LockResource(hGlobal);
-    if (!pResourceData) {
-        return nullptr;
-    }
-
-    // 4. 将资源数据拷贝到全局内存
-    HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
-    if (hBuffer) {
-        void* pBuffer = GlobalLock(hBuffer);
-        memcpy_s(pBuffer,imageSize, pResourceData, imageSize);
-        GlobalUnlock(hBuffer);
-
-        // 5. 创建 IStream 以便 GDI+ 使用
-        IStream* pStream = nullptr;
-        if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) == S_OK) {
-            // 6. 使用 GDI+ Bitmap 构造函数从流中加载 PNG
-            pBitmap = new Gdiplus::Bitmap(pStream);
-            if (pBitmap->GetLastStatus() != Gdiplus::Ok) {
-                delete pBitmap;
-                pBitmap = nullptr;
-            }
-            pStream->Release();  // 释放 IStream
-        }
-
-        // 7. 释放全局内存
-        GlobalFree(hBuffer);
-    }
-
-    return pBitmap;
-}
 
 void OnDraw(HDC hdc,const RECT &rect) 
 {
@@ -157,12 +122,12 @@ void OnDraw(HDC hdc,const RECT &rect)
     static int colorDirection = 5;  // 控制颜色变化的增减方向
 
     // 进度条的参数
-    static float progress = 0.0f;    // 当前进度条的进度（从0%到100%）
+    // static float progress = 0.0f;    // 当前进度条的进度（从0%到100%）
     const float progressSpeed = 0.00005f;  // 控制进度条前进的速度
 
     // 更新进度条进度
-    progress += progressSpeed;
-    if (progress > 1.0f) progress = 1.0f;  // 进度最大为100%
+    // progress += progressSpeed;
+    // if (progress > 1.0f) progress = 1.0f;  // 进度最大为100%
 
     // 每1秒一次透明度变化
     static DWORD lastAlphaTime = 0;
@@ -195,7 +160,8 @@ void OnDraw(HDC hdc,const RECT &rect)
     }
 
     // 左边已经停止呼吸的区域
-    int progressBarWidth = (int)(rect.right * progress);  // 计算已经不呼吸的区域的宽度
+    // int progressBarWidth = (int)(rect.right * progress);  // 计算已经不呼吸的区域的宽度
+    int progressBarWidth = (int)(rect.right * g_fProgressTotal);  // 计算已经不呼吸的区域的宽度
     GraphicsPath path;
     path.AddRectangle(Rect(0, 0, progressBarWidth, rect.bottom)); // 左侧不呼吸区域
     Region nonBreathingRegion(&path);  // 非呼吸区域
@@ -238,12 +204,10 @@ void OnDraw(HDC hdc,const RECT &rect)
     Region breathingRegion(Rect(progressBarWidth, 0, rect.right - progressBarWidth, rect.bottom)); // 剩下的呼吸区域
     graphics.SetClip(&breathingRegion, CombineModeReplace); // 切换到呼吸区域
     graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributesBreathing);
-
-
     // 清除剪辑
     graphics.ResetClip();
 
-
+    /*
 	// 用GDI + 绘制猪的帧率 大概是0.1s一帧 
     static int frame = 0;    // 当前帧编号
     static DWORD lastTime = 0; // 记录上次帧绘制的时间
@@ -273,7 +237,9 @@ void OnDraw(HDC hdc,const RECT &rect)
     if (g_hPigBitmap[frame]) {
         // 将当前帧绘制到窗口
         graphics.DrawImage(g_hPigBitmap[frame], pigX,pigY);  // 你可以指定 x, y 坐标
-    }
+    }*/
+
+	g_pSpriteMgr->Draw(graphics);
 }
 
 void UpdateLoadingAnimation(HWND hWnd)
@@ -370,6 +336,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // TODO: 在此处放置代码。
     // 调用GDI+库准备
 
+    g_pSpriteMgr = new SpriteManager();
+	g_pResMgr = new ResourceManager(hInstance);
+
     // 初始化全局字符串
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
@@ -400,6 +369,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             }
         }
 
+        g_pSpriteMgr->Update(GetTickCount64() % UINT_MAX);
+
         UpdateLoadingAnimation( msg.hwnd );
 
         // 退出
@@ -411,10 +382,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     GdiplusShutdown(g_gdiplusToken);
     DeleteObject(g_hBitmap);
-	for (int i = 0; i < sizeof g_hPigBitmap / sizeof g_hPigBitmap[0]; i++)
-	{
-		DeleteObject(g_hPigBitmap[i]);
-	}
+
+    delete g_pSpriteMgr;
+    delete g_pResMgr;
 
     return (int) msg.wParam;
 }
@@ -460,7 +430,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // 将实例句柄存储在全局变量中
 
    HWND hWnd = CreateWindowExW(WS_EX_LAYERED, szWindowClass, L"枫叶重生",
-       WS_POPUP, CW_USEDEFAULT, CW_USEDEFAULT,500,500, nullptr, nullptr, hInstance, nullptr);
+       WS_POPUP, g_ptWindow.x, g_ptWindow.y,g_szWindow.cx,g_szWindow.cy, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
    {
@@ -520,13 +490,53 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         // 加载透明图像
         g_hBitmap = LoadImageFromResource(IDB_UI1);
         // 加载猪
-		for (int i = 0; i < sizeof g_hPigBitmap / sizeof g_hPigBitmap[0]; i++)
-		{
-			g_hPigBitmap[i] = LoadPngFromResource(IDB_PIG1 + i);
-		}
+		//for (int i = 0; i < sizeof g_hPigBitmap / sizeof g_hPigBitmap[0]; i++)
+		//{
+		//	g_hPigBitmap[i] = LoadPngFromResource(IDB_PIG1 + i);
+		//}
 
-		g_hBkBitmap = LoadPngFromResource(IDB_UI1);
+		g_hBkBitmap = ResourceManager::LoadPngFromResource(IDB_UI1,g_hInstance);
 		// 从导入资源加载ID_UI1 而不是文件 从资源加载图片
+
+		g_pSpriteMgr->CreateSprite([](std::shared_ptr<Sprite> pSprite) {
+			pSprite->SetX(100);
+			pSprite->SetY(100);
+			pSprite->SetWidth(100);
+			pSprite->SetHeight(100);
+			pSprite->SetJumpHeight(100);
+			pSprite->SetJumpSpeed(10);
+			pSprite->SetJumpAcceleration(1);
+			pSprite->SetMoveSpeed(5);
+
+            Frame* pFrame = new Frame();
+			for (int i = 0; i < 3; i++)
+			{
+				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_STAND0 + i));
+			}
+
+			pSprite->SetBitmapFrame(SpriteState::Stand, pFrame);
+
+			pFrame = new Frame();
+			for (int i = 0; i < 7; i++)
+			{
+				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_MOVE0 + i));
+			}
+
+			pSprite->SetBitmapFrame(SpriteState::Move, pFrame);
+
+			pFrame = new Frame();
+
+			for (int i = 0; i < 1; i++)
+			{
+				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_JUMP0 + i));
+			}
+
+			pSprite->SetBitmapFrame(SpriteState::Jump, pFrame);
+
+			return true;
+		});
+
+
 
         // 设置分层窗口
         SetLayeredWindow(hWnd, g_hBitmap);

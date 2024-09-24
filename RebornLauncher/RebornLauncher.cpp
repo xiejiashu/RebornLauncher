@@ -316,8 +316,8 @@ void SetLayeredWindow(HWND hwnd, HBITMAP hBitmap) {
     // 窗口移到最中间
 	RECT rect;
 	GetWindowRect(hwnd, &rect);
-	g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
-	g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
+	//g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
+	//g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
     UpdateLayeredWindow(hwnd, hdcScreen, &g_ptWindow, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
 
     // 释放资源
@@ -442,8 +442,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    // SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
    // 置顶并移到最中间
-   g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - 300) / 2;
-   g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - 300) / 2;
+   g_ptWindow.x = GetSystemMetrics(SM_CXSCREEN) / 3;
+   g_ptWindow.y = GetSystemMetrics(SM_CYSCREEN) / 3;
    SetWindowPos(hWnd, HWND_TOPMOST, g_ptWindow.x, g_ptWindow.y, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
 
@@ -536,7 +536,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return true;
 		});
 
+        g_pSpriteMgr->CreateSprite([](std::shared_ptr<Sprite> pSprite) {
+			pSprite->SetX(300);
+			pSprite->SetY(100);
+			pSprite->SetWidth(100);
+			pSprite->SetHeight(100);
+			pSprite->SetJumpHeight(100);
+			pSprite->SetJumpSpeed(10);
+			pSprite->SetJumpAcceleration(1);
+            pSprite->SetMoveSpeed(5);
 
+            // 
+			Frame* pFrame = new Frame();
+            for (int i = 0; i < 3; i++)
+            {
+                pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
+            }
+			pSprite->SetBitmapFrame(SpriteState::Stand, pFrame);
+
+			pFrame = new Frame();
+			for (int i = 0; i < 7; i++)
+			{
+				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
+			}
+			pSprite->SetBitmapFrame(SpriteState::Move, pFrame);
+
+            pFrame = new Frame();
+			for (int i = 0; i < 1; i++)
+			{
+				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
+			}
+
+			pSprite->SetBitmapFrame(SpriteState::Jump, pFrame);
+
+            return true;
+        });
 
         // 设置分层窗口
         SetLayeredWindow(hWnd, g_hBitmap);

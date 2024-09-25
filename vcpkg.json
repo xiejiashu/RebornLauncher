@@ -1,0 +1,12 @@
+{
+    "dependencies": [ 
+		"asio",
+		"bsio",
+		"cpp-httplib",
+		"cli11",
+		"cryptopp",
+		"gtest",
+		"jsoncpp",
+		"sqlitecpp"
+	]
+}

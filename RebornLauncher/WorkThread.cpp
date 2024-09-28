@@ -75,7 +75,7 @@ DWORD WorkThread::Run()
 		}
 	}
 
-	// 下载更新文件的地址 https://gitee.com/MengMianHeiYiRen/MagicShow/blob/master/ReadMe.txt
+	// 下载更新文件的地址 
 	httplib::Client cli{ "gitee.com",433 };
 	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
 	if (res && res->status == 200) {
@@ -247,7 +247,8 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
 
 		// 对比MD5
-		if (m_mapFiles.find(strLocalFile) != m_mapFiles.end())
+		auto it = m_mapFiles.find(strLocalFile);
+		if (it != m_mapFiles.end())
 		{
 			if (m_mapFiles[strLocalFile].m_strMd5 == strLocalFileMd5)
 			{
@@ -260,7 +261,7 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		std::filesystem::remove(strLocalFile);
 		// 下载新文件
 		httplib::Client cli(strHost, wPort);
-		auto res = cli.Get(download.c_str());
+		auto res = cli.Get(std::to_string(it->second.m_qwTime) + "/" + download);
 		if (res && res->status == 200) {
 			std::ofstream ofs(strLocalFile, std::ios::binary);
 			ofs.write(res->body.c_str(), res->body.size());

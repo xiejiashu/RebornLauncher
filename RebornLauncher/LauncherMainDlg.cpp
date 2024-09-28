@@ -43,7 +43,7 @@ void LauncherMainDlg::UpdateStatusBar(int TotalProgress, int CurrentProgress, in
 {
 	SendMessage(m_hProgressTotal, PBM_SETPOS, TotalProgress, 0);
 	SendMessage(m_hProgressCurrent, PBM_SETPOS, CurrentProgress, 0);
-	wchar_t buffer[256];
+	TCHAR buffer[256];
 	swprintf_s(buffer, L"%d/%d", CurrentFile, TotalFiles);
 	SendMessage(m_hStatus, SB_SETTEXT, 1, (LPARAM)buffer);
 }

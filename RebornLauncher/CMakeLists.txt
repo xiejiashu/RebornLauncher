@@ -12,7 +12,7 @@ target_compile_definitions(
 	#-D_MBCS # 多字节
 	#-D_AFXDLL
 )
-target_link_libraries(RebornLauncher cryptopp::cryptopp httplib::httplib JsonCpp::JsonCpp SQLiteCpp)
+target_link_libraries(RebornLauncher cryptopp::cryptopp httplib::httplib JsonCpp::JsonCpp SQLiteCpp zstd::libzstd)
 #target_link_options(RebornLauncher
 #	PRIVATE
 #	/ENTRY:wWinMainCRTStartup

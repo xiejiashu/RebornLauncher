@@ -9,6 +9,10 @@
 #include "LauncherMainDlg.h"
 #include <objidl.h>
 #include <gdiplus.h>
+#include <objbase.h>
+#include <shlobj.h>
+#include <shellapi.h>
+#include <ShlDisp.h>
 
 #include "Frame.h"
 #include "Unit.h"
@@ -60,7 +64,7 @@ void InitGDIPlus(ULONG_PTR& gdiplusToken) {
 }
 
 // 加载 PNG 图像
-HBITMAP LoadImageWithAlpha(LPCWSTR filePath) {
+HBITMAP LoadImageWithAlpha(LPCSTR filePath) {
     Bitmap* bitmap = new Bitmap((TCHAR*)filePath);
     HBITMAP hBitmap;
     bitmap->GetHBITMAP(Color(0, 0, 0, 0), &hBitmap);
@@ -325,6 +329,53 @@ void SetLayeredWindow(HWND hwnd, HBITMAP hBitmap) {
     ReleaseDC(NULL, hdcScreen);
 }
 
+// 创建图标
+void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath) {
+    IShellLink* pShellLink = NULL;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&pShellLink);
+    if (SUCCEEDED(hr)) {
+        pShellLink->SetPath(lpTargetPath);
+		pShellLink->SetIconLocation(lpTargetPath, 0);
+        // 把路径切出来
+		TCHAR szPath[MAX_PATH];
+		_tcscpy_s(szPath, lpTargetPath);
+		TCHAR* p = _tcsrchr(szPath, '\\');
+		pShellLink->SetWorkingDirectory(p);
+        IPersistFile* pPersistFile = NULL;
+        hr = pShellLink->QueryInterface(IID_IPersistFile, (LPVOID*)&pPersistFile);
+        if (SUCCEEDED(hr)) {
+            pPersistFile->Save(lpShortcutPath, TRUE);
+            pPersistFile->Release();
+        }
+        pShellLink->Release();
+    }
+}
+
+void MoveToDirectory(LPCTSTR lpTargetDir) {
+    TCHAR currentPath[MAX_PATH];
+    GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
+    TCHAR newPath[MAX_PATH];
+    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, newPath);
+    MoveFile(currentPath, newPath);
+    ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
+}
+
+bool IsInMapleRebornDir() {
+	TCHAR currentPath[MAX_PATH];
+	GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
+	TCHAR* p = _tcsrchr(currentPath, '\\');
+	if (p) {
+		p = _tcsrchr(currentPath, '\\');
+		if (p) {
+			p++;
+			if (_tcscmp(p, TEXT("MapleReborn")) == 0) {
+				return true;
+			}
+		}
+	}
+    return false; // 不在桌面或特定目录
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -332,9 +383,38 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
+    g_hInstance = hInstance;
 
     // TODO: 在此处放置代码。
     // 调用GDI+库准备
+
+    // 桌看当前是不是在桌面，或是在C盘目录下 如果是桌面，就把自己移到D盘(没有D盘就E盘，依次…… 如果都没有，就移到C:\MapleReborn 目录下面。
+    HRESULT hr = CoInitialize(NULL);
+	if (FAILED(hr)) {
+		return -1;
+	}
+
+    if (!IsInMapleRebornDir())
+    {
+		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn");
+        const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
+		for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
+				MoveToDirectory(dirs[i]);
+				lpTargetDir = dirs[i];
+				break;
+			}
+		}
+
+		// 创建桌面快捷方式
+		TCHAR shortcutPath[MAX_PATH];
+        // 获取桌面路径
+		LPITEMIDLIST pidlDesktop;
+		SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
+		SHGetPathFromIDList(pidlDesktop, shortcutPath);
+		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
+		CreateShortcut(shortcutPath, lpTargetDir);
+    }
 
     g_pSpriteMgr = new SpriteManager();
 	g_pResMgr = new ResourceManager(hInstance);
@@ -343,7 +423,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
-    g_hInstance = hInstance;
+
 
     // 执行应用程序初始化:
     if (!InitInstance (hInstance, true))
@@ -386,6 +466,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     delete g_pSpriteMgr;
     delete g_pResMgr;
 
+    CoUninitialize();
     return (int) msg.wParam;
 }
 

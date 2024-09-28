@@ -16,5 +16,8 @@ find_package(cryptopp CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(jsoncpp CONFIG REQUIRED)
 find_package(SQLiteCpp REQUIRED)
+find_package(zstd CONFIG REQUIRED)
+message(STATUS "Linking zstd target: ${ZSTD_LIBRARIES}")
 
 add_subdirectory(RebornLauncher)
+add_subdirectory(GenerateUpdateInformation)

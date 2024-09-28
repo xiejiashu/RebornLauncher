@@ -250,7 +250,7 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		auto it = m_mapFiles.find(strLocalFile);
 		if (it != m_mapFiles.end())
 		{
-			if (m_mapFiles[strLocalFile].m_strMd5 == strLocalFileMd5)
+			if (it->second.m_strMd5 == strLocalFileMd5)
 			{
 				m_nCurrentDownload += 1;
 				continue;

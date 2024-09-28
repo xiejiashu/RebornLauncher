@@ -86,6 +86,9 @@ Application::Application(HINSTANCE hInstance, LPWSTR lpCmdLine)
 		size_t nPos = strFileName.find_first_of(TEXT("\\"));
 		std::wstring strTime = strFileName.substr(0, nPos);
 		config.m_qwTime = _wtoi64(strTime.c_str());
+		if (config.m_qwTime == 0){
+			break;
+		}
 		// 把文件名截取出来
 		strFileName = strFileName.substr(nPos + 1);
 

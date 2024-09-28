@@ -6,6 +6,8 @@
 #include <json/json.h>
 #include <wincrypt.h>
 #include "FileHash.h"
+#include <TlHelp32.h>
+#include <Psapi.h>
 
 #pragma comment(lib, "advapi32.lib")
 
@@ -17,6 +19,12 @@ WorkThread::WorkThread()
 	if (m_hThread == NULL) {
 		HandleError("CreateThread failed");
 	}
+
+	// 把 m_hFileMappings 释放掉
+	for (auto hFileMapping : m_hFileMappings)
+	{
+		CloseHandle(hFileMapping);
+	}
 }
 
 WorkThread::~WorkThread()
@@ -25,6 +33,33 @@ WorkThread::~WorkThread()
 
 DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 {
+	// 结束所有名字叫 MapleReborn.exe 的进程
+	// 1. 获取所有进程
+	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (hSnapshot != INVALID_HANDLE_VALUE) {
+		PROCESSENTRY32 pe;
+		pe.dwSize = sizeof(PROCESSENTRY32);
+		if (Process32First(hSnapshot, &pe)) {
+			do {
+				HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+				if (hProcess) {
+					TCHAR processPath[MAX_PATH];
+					if (GetModuleFileNameEx(hProcess, NULL, processPath, MAX_PATH)) {
+						std::wstring strProcessPath = processPath;
+						if (strProcessPath.find(L"MapleReborn.exe") != std::string::npos){
+							TerminateProcess(hProcess, 0);
+						}
+						if (strProcessPath.find(L"MapleStory.exe") != std::string::npos) {
+							TerminateProcess(hProcess, 0);
+						}
+					}
+					CloseHandle(hProcess);
+				}
+			} while (Process32Next(hSnapshot, &pe));
+		}
+		CloseHandle(hSnapshot);
+	}
+
 	WorkThread* pThis = (WorkThread*)lpParameter;
 	if (pThis) {
 		return pThis->Run();
@@ -36,14 +71,16 @@ DWORD WorkThread::Run()
 {
 	// 先把本地的Version.dat文件读取出来
 	{
+		std::cout << "9999999999999999999" << std::endl;
 		std::string strLocalVersionDatContent;
-		std::ifstream ifs("Version.dat");
+		std::ifstream ifs("Version.dat", std::ios::binary);
 		if (ifs.is_open()) {
 			std::stringstream buffer;
 			buffer << ifs.rdbuf();
 			strLocalVersionDatContent = buffer.str();
 			ifs.close();
 		}
+		std::cout << "aaaaaaaaaaaaaaaaaaaaaaa" << std::endl;
 
 		if (!strLocalVersionDatContent.empty())
 		{
@@ -74,7 +111,7 @@ DWORD WorkThread::Run()
 			}
 		}
 	}
-
+	std::cout << "bbbbbbbbbbbbbbbbbbbbbbbbbbb" << std::endl;
 	// 下载更新文件的地址 
 	httplib::Client cli{ "https://gitee.com" };
 	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
@@ -129,13 +166,25 @@ DWORD WorkThread::Run()
 					for (auto& download : downloadList) {
 						m_vecRunTimeList.push_back(download.asString());
 					}
+
+					// 保存到本地
+					std::ofstream ofs("Version.dat", std::ios::binary);
+					ofs.write(res2->body.c_str(), res2->body.size());
+					ofs.close();
 				}
 			}
 		}
-
+		std::cout << "cccccccccccccccccccccccccc" << std::endl;
 		// 下载RunTime文件
 		DownloadRunTimeFile(m_strHost,wPort);
 	} 
+
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
+	// 把MD5写到MAP中
+	WriteDataToMapping();
+
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
 	// 启动游戏
 	STARTUPINFO si = { sizeof(si) };
@@ -150,12 +199,18 @@ DWORD WorkThread::Run()
 	httplib::Server svr;
 	svr.Get("/download", [&](const httplib::Request& req, httplib::Response& res) {
 		std::string strPage = req.get_param_value("page");
+		std::cout << "ddddddddddddd download page:"<< strPage << std::endl;
 		auto it = m_mapFiles.find(strPage);
 		if (it != m_mapFiles.end())
 		{
 			std::string strLocalFile = it->first;
-			std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
-			if (it->second.m_strMd5 == strLocalFileMd5)
+			bool Md5Same = false;
+			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+				std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
+				Md5Same = it->second.m_strMd5 == strLocalFileMd5;
+			}
+
+			if (Md5Same)
 			{
 				res.status = 200;
 				res.set_content("OK", "text/plain");
@@ -164,32 +219,36 @@ DWORD WorkThread::Run()
 			{
 				// 下载
 				httplib::Client cli(m_strHost, m_wPort);
-				strPage = "Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
+				strPage = "/Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
 				std::replace(strPage.begin(), strPage.end(), '\\', '/');
 				auto ret = cli.Get(strPage);
 				if (ret && ret->status == 200)
 				{
 					std::ofstream ofs(strLocalFile, std::ios::binary);
+					std::filesystem::create_directories(it->first);
 					ofs.write(ret->body.c_str(), ret->body.size());
 					ofs.close();
 					res.status = 200;
 					res.set_content("OK", "text/plain");
+					std::cout << __FILE__<<":" << __LINE__ << std::endl;
 				}
 				else
 				{
 					res.status = 404;
 					res.set_content("Not Found", "text/plain");
+					std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 				}
 			}
 
-			Json::Value root;
-			root["total"] = GetTotalDownload();
-			root["current"] = GetCurrentDownload();
-			res.set_content(root.toStyledString(), "application/json");
+			// 返回一个OK就行 不需要json
+			res.status = 200;
+			res.set_content("OK", "text/plain");
+			std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 		}
 	});
 
 	// svr.bind_to_port("localhost", 12345);
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	svr.listen("localhost", 12345);
 
 	if (m_hGameProcess)
@@ -280,7 +339,7 @@ std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 	ZSTD_freeDDict(ddict);
 	ZSTD_freeDCtx(dctx);
 
-	return ciphertext;
+	return strJson;
 }
 
 void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPort)
@@ -291,27 +350,40 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 	{
 		// 先查看本地是否存在这个文件
 		std::string strLocalFile = download;
-		std::string strPage = "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download;
+		std::string strPage = "/Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download;
 		std::replace(strPage.begin(), strPage.end(), '\\', '/');
 
-		std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
+		std::cout <<__FUNCTION__<<":" << strPage << std::endl;
 
 		// 对比MD5
 		auto it = m_mapFiles.find(strLocalFile);
 		if (it != m_mapFiles.end())
 		{
-			if (it->second.m_strMd5 == strLocalFileMd5)
+			bool Md5Same = false;
+			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+				std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
+				Md5Same = it->second.m_strMd5 == strLocalFileMd5;
+				std::cout << "md51:" << it->second.m_strMd5 << "vs md52:"<< strLocalFileMd5 << std::endl;
+			}
+
+			if (Md5Same)
 			{
 				m_nCurrentDownload += 1;
 				continue;
 			}
 		}
 		
+		std::cout << __FILE__ << ":" << __LINE__<< " 文件:" << strLocalFile << std::endl;
 		// 删除本地文件
-		std::filesystem::remove(strLocalFile);
+		// std::filesystem::remove(strLocalFile);
+		DeleteFileA(strLocalFile.c_str());
+
+		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 		// 下载新文件
 		httplib::Client cli(strHost, wPort);
+		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 		auto res = cli.Get(strPage);
+		std::cout << __FILE__ << ":" << __LINE__ << strPage << std::endl;
 		if (res && res->status == 200) {
 			std::ofstream ofs(strLocalFile, std::ios::binary);
 			ofs.write(res->body.c_str(), res->body.size());
@@ -319,6 +391,8 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		}
 		m_nCurrentDownload += 1;
 	}
+
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 }
 
 int WorkThread::GetTotalDownload() const
@@ -329,4 +403,29 @@ int WorkThread::GetTotalDownload() const
 int WorkThread::GetCurrentDownload() const
 {
 	return m_nCurrentDownload;
+}
+
+void WorkThread::WriteDataToMapping()
+{
+	// m_mapFiles
+	for (auto& [strPage, config] : m_mapFiles)
+	{
+		std::string strMemoryName = strPage;
+		// 删除 "\"
+		std::replace(strMemoryName.begin(), strMemoryName.end(), '\\', '_');
+		HANDLE hFileMapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, config.m_strMd5.length() + 1, strMemoryName.c_str());
+		if (hFileMapping)
+		{
+			// 把MD5写进去
+			LPVOID lpBaseAddress = MapViewOfFile(hFileMapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+			if (lpBaseAddress)
+			{
+				memcpy(lpBaseAddress, config.m_strMd5.c_str(), config.m_strMd5.length());
+				// 添加终止符
+				((char*)lpBaseAddress)[config.m_strMd5.length()] = '\0';
+				UnmapViewOfFile(lpBaseAddress);
+			}
+			m_hFileMappings.push_back(hFileMapping);
+		}
+	}
 }

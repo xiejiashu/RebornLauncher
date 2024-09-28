@@ -172,6 +172,9 @@ Application::Application(HINSTANCE hInstance, LPWSTR lpCmdLine)
 	ZSTD_freeCDict(cdict);
 	ZSTD_freeCCtx(cctx);
 
+	// É¾³ý¾ÉµÄ
+	DeleteFile(TEXT("Version.dat"));
+
 	std::ofstream ofs("Version.dat", std::ios::binary);
 	ofs.write(strCompress.c_str(), strCompress.length());
 	ofs.close();

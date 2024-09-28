@@ -14,6 +14,7 @@
 #include <shellapi.h>
 #include <ShlDisp.h>
 #include <Shlwapi.h>
+#include <iostream>
 
 #include <TlHelp32.h>
 #include <Psapi.h>
@@ -395,12 +396,9 @@ void MoveToDirectory(LPCTSTR lpTargetDir) {
 	TCHAR* FileName = PathFindFileName(currentPath);
     TCHAR newPath[MAX_PATH];
     swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, FileName);
-    if (MoveFile(currentPath, newPath))
-    {
-        // 查看目标进程是否已启动，已启动就不再创建
-        if(!IsProcessRunning(newPath))
-            ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
-    }
+	// 先清除旧文件
+	DeleteFile(newPath);
+    MoveFile(currentPath, newPath);
 }
 
 bool IsInMapleRebornDir() {
@@ -411,16 +409,23 @@ bool IsInMapleRebornDir() {
     // 获取文件名
     TCHAR* fileName = PathFindFileName(filePath);
 
-    // 去掉文件名，保留目录路径
-    *fileName = '\0';
+	std::wstring str = filePath;
+    if (str.find(TEXT("MapleReborn")) != std::string::npos)
+    {
+        return true;
+    }
 
-    // 获取父目录名
-    PathRemoveBackslash(filePath);
-    PathRemoveFileSpec(filePath);
-
-    // 检查父目录名是否为 "MapleReborn"
-    TCHAR* folderName = PathFindFileName(filePath);
-    return _tcscmp(folderName, TEXT("MapleReborn")) == 0;
+    //// 去掉文件名，保留目录路径
+    //*fileName = '\0';
+    //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
+    //// 获取父目录名
+    //PathRemoveBackslash(filePath);
+    //PathRemoveFileSpec(filePath);
+    //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
+    //// 检查父目录名是否为 "MapleReborn"
+    //TCHAR* folderName = PathFindFileName(filePath);
+    //MessageBox(NULL, folderName, TEXT("err"), MB_OK);
+    return false;
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -432,8 +437,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
 
+    AllocConsole();
+    FILE* stream;
+    freopen_s(&stream, "CONOUT$", "w", stdout); //CONOUT$
+
     // TODO: 在此处放置代码。
     // 调用GDI+库准备
+
+    // MessageBox(NULL, TEXT("0000000000000000"), TEXT("err"), MB_OK);
 
     // 桌看当前是不是在桌面，或是在C盘目录下 如果是桌面，就把自己移到D盘(没有D盘就E盘，依次…… 如果都没有，就移到C:\MapleReborn 目录下面。
     HRESULT hr = CoInitialize(NULL);
@@ -441,9 +452,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		return -1;
 	}
 
+    // MessageBox(NULL, TEXT("1111111111111111111"), TEXT("err"), MB_OK);
+
 #ifndef _DEBUG
     if (!IsInMapleRebornDir())
     {
+       //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
 		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
 		for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
@@ -456,6 +470,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			}
 		}
 
+        // MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
+
 		// 创建桌面快捷方式
 		TCHAR shortcutPath[MAX_PATH];
         // 获取桌面路径
@@ -463,6 +479,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		HRESULT hr = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
 		if (FAILED(hr)) {
 			return -1;
+            // MessageBox(NULL, TEXT("44444444444444444444444"), TEXT("err"), MB_OK);
 		}
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
 		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
@@ -472,6 +489,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         // 把名字提取出来拼，把路径去掉
 		TCHAR* fileName = PathFindFileName(currentPath);
 		CreateShortcut(shortcutPath, lpTargetDir, fileName);
+        // MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
+
+        // 查看目标进程是否已启动，已启动就不再创建
+		TCHAR newPath[MAX_PATH];
+		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, fileName);
+        if (!IsProcessRunning(newPath))
+            ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
         return 0;
     }
 #endif
@@ -483,12 +507,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
-
+    std::cout << "77777777777777" << std::endl;
 	WorkThread workThread;
 
     // 执行应用程序初始化:
     if (!InitInstance (hInstance, true))
     {
+        std::cout << "888888888888" << std::endl;
         return FALSE;
     }
 
@@ -522,9 +547,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         // 退出
 		if (msg.message == WM_QUIT)
 		{
+            std::cout << "eeeeeeeeeeeeeeeeeeee" << std::endl;
 			break;
 		}
     }
+
+    std::cout << "ooooooooooooooooooo" << std::endl;
 
     GdiplusShutdown(g_gdiplusToken);
     DeleteObject(g_hBitmap);

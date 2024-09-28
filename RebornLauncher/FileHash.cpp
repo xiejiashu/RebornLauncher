@@ -4,6 +4,7 @@
 #include <cryptopp/hex.h>
 #include <cryptopp/files.h>
 
+
 //std::string FileHash::string_md5(std::wstring const& str)
 //{
 //	CryptoPP::MD5 md5;

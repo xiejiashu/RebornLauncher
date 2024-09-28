@@ -22,6 +22,8 @@ public:
 	int GetTotalDownload() const;
 	// 获取当前下载
 	int GetCurrentDownload() const;
+	// 把数据写入映射内存
+	void WriteDataToMapping();
 private:
 	// 当前版本号
 	int64_t m_qwVersion{ 0 };
@@ -42,4 +44,6 @@ private:
 
 	// 目标进程
 	HANDLE m_hGameProcess{ nullptr };
+
+	std::vector<HANDLE> m_hFileMappings;
 };

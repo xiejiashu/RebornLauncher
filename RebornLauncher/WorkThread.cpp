@@ -76,7 +76,7 @@ DWORD WorkThread::Run()
 	}
 
 	// 下载更新文件的地址 
-	httplib::Client cli{ "gitee.com",433 };
+	httplib::Client cli{ "https://gitee.com" };
 	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
 	if (res && res->status == 200) {
 		std::string ciphertext;

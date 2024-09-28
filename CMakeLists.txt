@@ -15,6 +15,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin) # exe
 find_package(cryptopp CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(jsoncpp CONFIG REQUIRED)
+find_package(OpenSSL CONFIG REQUIRED)
 find_package(SQLiteCpp REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 message(STATUS "Linking zstd target: ${ZSTD_LIBRARIES}")

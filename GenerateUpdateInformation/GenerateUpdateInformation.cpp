@@ -3,6 +3,7 @@
 #include <zstd.h>
 #include <fstream>
 #include <json/json.h>
+#include <algorithm> 
 #include <iostream>
 #include "FileHash.h"
 #include "GenerateUpdateInformation.h"
@@ -93,6 +94,22 @@ Application::Application(HINSTANCE hInstance, LPWSTR lpCmdLine)
 			qwTime = config.m_qwTime;
 		}
 
+		// 获取文件名的扩展名 如果是.exe文件,DLL文件,WZ文件,ini文件,acm文件 就加入到下载列表
+		std::wstring strExt = strFileName.substr(strFileName.find_last_of(TEXT(".")) + 1);
+		// 变小写
+		std::transform(strExt.begin(), strExt.end(), strExt.begin(), ::tolower);
+
+		if (strExt == TEXT("exe") || strExt == TEXT("dll") || strExt == TEXT("wz") || strExt == TEXT("ini") || strExt == TEXT("acm"))
+		{
+			m_vecDownloadList.emplace(strFileName);
+		}
+
+		// 如果是 htaccess 文件,就不要加入到文件列表中
+		if (strFileName == TEXT(".htaccess"))
+		{
+			continue;
+		}
+
 		// 看看文件名中是不是有同名的文件 如果没有，或者时间戳比现在的旧，就更新
 		auto iter = m_mapFiles.find(strFileName);
 		if (iter == m_mapFiles.end() || iter->second.m_qwTime < config.m_qwTime)
@@ -128,16 +145,28 @@ Application::Application(HINSTANCE hInstance, LPWSTR lpCmdLine)
 		root["file"].append(fileJson);
 	}
 
+	// 写入下载列表
+	Json::Value downloadList;
+	for (auto& download : m_vecDownloadList)
+	{
+		downloadList.append(wstr2str(download));
+	}
+	root["runtime"] = downloadList;
+
 #ifndef _DEBUG
 	std::cout << "正在压缩信息..." << std::endl;
-	// 用ZSDT 加密压缩 并保存 密钥为 "KRu998Am"
+
+	// 应用字典
+	std::string strDict = "KRu998Am";
+	ZSTD_CDict* cdict = ZSTD_createCDict(strDict.c_str(), strDict.length(), 3);
 	std::string strJson = root.toStyledString();
 	std::string strCompress;
 	ZSTD_CCtx* cctx = ZSTD_createCCtx();
 	size_t compressBound = ZSTD_compressBound(strJson.length());
 	strCompress.resize(compressBound);
-	size_t compressSize = ZSTD_compressCCtx(cctx, &strCompress[0], compressBound, strJson.c_str(), strJson.length(), 3);
+	size_t compressSize = ZSTD_compress_usingCDict(cctx, &strCompress[0], compressBound, strJson.c_str(), strJson.length(), cdict);
 	strCompress.resize(compressSize);
+	ZSTD_freeCDict(cdict);
 	ZSTD_freeCCtx(cctx);
 
 	std::ofstream ofs("Version.dat", std::ios::binary);

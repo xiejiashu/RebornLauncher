@@ -1,5 +1,6 @@
 #include <vector>
 #include <string>
+#include <set>
 #include <map>
 class Application
 {
@@ -17,4 +18,6 @@ public:
 private:
 	HINSTANCE m_hInstance{ nullptr };
 	std::map<std::wstring, VersionConfig> m_mapFiles;
+	// 必要的文件名列表
+	std::set<std::wstring> m_vecDownloadList;
 };

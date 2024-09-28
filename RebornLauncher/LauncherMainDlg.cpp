@@ -76,10 +76,11 @@ LRESULT LauncherMainDlg::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 		}
 	}
 	// срио╫г╣д╡Ф
-	case WM_CLOSE:
-		DestroyWindow(hWnd);
+	case WM_DESTROY:
+	{
 		PostQuitMessage(0);
 		break;
+	}
 	}
 	return 0;
 }

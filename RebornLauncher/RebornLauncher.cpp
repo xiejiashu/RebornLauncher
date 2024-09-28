@@ -13,15 +13,21 @@
 #include <shlobj.h>
 #include <shellapi.h>
 #include <ShlDisp.h>
+#include <Shlwapi.h>
+
+#include <TlHelp32.h>
+#include <Psapi.h>
 
 #include "Frame.h"
 #include "Unit.h"
 #include "Sprite.h"
 #include "SpriteManager.h"
 #include "ResourceManager.h"
+#include "WorkThread.h"
 
 
 #pragma comment (lib,"Gdiplus.lib")
+#pragma comment (lib,"Shlwapi.lib")
 
 #define MAX_LOADSTRING 100
 using namespace Gdiplus;
@@ -330,17 +336,16 @@ void SetLayeredWindow(HWND hwnd, HBITMAP hBitmap) {
 }
 
 // 创建图标
-void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath) {
+void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath,const LPCTSTR lpFileName) {
     IShellLink* pShellLink = NULL;
     HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&pShellLink);
     if (SUCCEEDED(hr)) {
-        pShellLink->SetPath(lpTargetPath);
-		pShellLink->SetIconLocation(lpTargetPath, 0);
-        // 把路径切出来
-		TCHAR szPath[MAX_PATH];
-		_tcscpy_s(szPath, lpTargetPath);
-		TCHAR* p = _tcsrchr(szPath, '\\');
-		pShellLink->SetWorkingDirectory(p);
+        // 合出一个新路径
+		TCHAR newPath[MAX_PATH];
+		swprintf(newPath, TEXT("%s\\%s"), lpTargetPath, lpFileName);
+        pShellLink->SetPath(newPath);
+		pShellLink->SetIconLocation(newPath, 0);
+		pShellLink->SetWorkingDirectory(lpTargetPath);
         IPersistFile* pPersistFile = NULL;
         hr = pShellLink->QueryInterface(IID_IPersistFile, (LPVOID*)&pPersistFile);
         if (SUCCEEDED(hr)) {
@@ -351,29 +356,71 @@ void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath) {
     }
 }
 
+bool IsProcessRunning(const TCHAR* exePath) {
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+    if (!Process32First(hSnapshot, &pe)) {
+        CloseHandle(hSnapshot);
+        return false;
+    }
+
+    do {
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+        if (hProcess) {
+            TCHAR processPath[MAX_PATH];
+            if (GetModuleFileNameEx(hProcess, NULL, processPath, MAX_PATH)) {
+                if (_tcsicmp(processPath, exePath) == 0) {
+                    CloseHandle(hProcess);
+                    CloseHandle(hSnapshot);
+                    return true;
+                }
+            }
+            CloseHandle(hProcess);
+        }
+    } while (Process32Next(hSnapshot, &pe));
+
+    CloseHandle(hSnapshot);
+    return false;
+}
+
 void MoveToDirectory(LPCTSTR lpTargetDir) {
     TCHAR currentPath[MAX_PATH];
     GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
+    // 提取文件名
+	TCHAR* FileName = PathFindFileName(currentPath);
     TCHAR newPath[MAX_PATH];
-    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, newPath);
-    MoveFile(currentPath, newPath);
-    ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
+    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, FileName);
+    if (MoveFile(currentPath, newPath))
+    {
+        // 查看目标进程是否已启动，已启动就不再创建
+        if(!IsProcessRunning(newPath))
+            ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
+    }
 }
 
 bool IsInMapleRebornDir() {
-	TCHAR currentPath[MAX_PATH];
-	GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
-	TCHAR* p = _tcsrchr(currentPath, '\\');
-	if (p) {
-		p = _tcsrchr(currentPath, '\\');
-		if (p) {
-			p++;
-			if (_tcscmp(p, TEXT("MapleReborn")) == 0) {
-				return true;
-			}
-		}
-	}
-    return false; // 不在桌面或特定目录
+    // 获取当前模块的文件路径
+    TCHAR filePath[MAX_PATH];
+    GetModuleFileName(NULL, filePath, MAX_PATH);
+
+    // 获取文件名
+    TCHAR* fileName = PathFindFileName(filePath);
+
+    // 去掉文件名，保留目录路径
+    *fileName = '\0';
+
+    // 获取父目录名
+    PathRemoveBackslash(filePath);
+    PathRemoveFileSpec(filePath);
+
+    // 检查父目录名是否为 "MapleReborn"
+    TCHAR* folderName = PathFindFileName(filePath);
+    return _tcscmp(folderName, TEXT("MapleReborn")) == 0;
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -394,11 +441,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		return -1;
 	}
 
+#ifndef _DEBUG
     if (!IsInMapleRebornDir())
     {
 		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
 		for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+            // 创建目录
+			CreateDirectory(dirs[i], NULL);
 			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
 				MoveToDirectory(dirs[i]);
 				lpTargetDir = dirs[i];
@@ -410,11 +460,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		TCHAR shortcutPath[MAX_PATH];
         // 获取桌面路径
 		LPITEMIDLIST pidlDesktop;
-		SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
+		HRESULT hr = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
+		if (FAILED(hr)) {
+			return -1;
+		}
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
 		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
-		CreateShortcut(shortcutPath, lpTargetDir);
+        // 获取当前模块的名字
+		TCHAR currentPath[MAX_PATH];
+		GetModuleFileName(hInstance, currentPath, MAX_PATH);
+        // 把名字提取出来拼，把路径去掉
+		TCHAR* fileName = PathFindFileName(currentPath);
+		CreateShortcut(shortcutPath, lpTargetDir, fileName);
+        return 0;
     }
+#endif
 
     g_pSpriteMgr = new SpriteManager();
 	g_pResMgr = new ResourceManager(hInstance);
@@ -424,6 +484,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
 
+	WorkThread workThread;
 
     // 执行应用程序初始化:
     if (!InitInstance (hInstance, true))
@@ -447,6 +508,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
+        }
+
+        if (workThread.GetTotalDownload() > 0)
+        {
+			g_fProgressTotal = workThread.GetCurrentDownload() * 1.f / workThread.GetTotalDownload() * 1.f;
         }
 
         g_pSpriteMgr->Update(GetTickCount64() % UINT_MAX);

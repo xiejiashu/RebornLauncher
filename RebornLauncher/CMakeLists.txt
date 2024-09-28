@@ -11,8 +11,9 @@ target_compile_definitions(
 	#-DUNICODE
 	#-D_MBCS # 多字节
 	#-D_AFXDLL
+	-DCPPHTTPLIB_OPENSSL_SUPPORT
 )
-target_link_libraries(RebornLauncher cryptopp::cryptopp httplib::httplib JsonCpp::JsonCpp SQLiteCpp zstd::libzstd)
+target_link_libraries(RebornLauncher cryptopp::cryptopp httplib::httplib JsonCpp::JsonCpp SQLiteCpp zstd::libzstd OpenSSL::SSL OpenSSL::Crypto)
 #target_link_options(RebornLauncher
 #	PRIVATE
 #	/ENTRY:wWinMainCRTStartup

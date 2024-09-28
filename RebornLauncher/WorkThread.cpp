@@ -145,6 +145,53 @@ DWORD WorkThread::Run()
 	}
 
 	m_hGameProcess = pi.hProcess;
+
+	// 监听网络请求
+	httplib::Server svr;
+	svr.Get("/download", [&](const httplib::Request& req, httplib::Response& res) {
+		std::string strPage = req.get_param_value("page");
+		auto it = m_mapFiles.find(strPage);
+		if (it != m_mapFiles.end())
+		{
+			std::string strLocalFile = it->first;
+			std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
+			if (it->second.m_strMd5 == strLocalFileMd5)
+			{
+				res.status = 200;
+				res.set_content("OK", "text/plain");
+			}
+			else
+			{
+				// 下载
+				httplib::Client cli(m_strHost, m_wPort);
+				strPage = "Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
+				std::replace(strPage.begin(), strPage.end(), '\\', '/');
+				auto ret = cli.Get(strPage);
+				if (ret && ret->status == 200)
+				{
+					std::ofstream ofs(strLocalFile, std::ios::binary);
+					ofs.write(ret->body.c_str(), ret->body.size());
+					ofs.close();
+					res.status = 200;
+					res.set_content("OK", "text/plain");
+				}
+				else
+				{
+					res.status = 404;
+					res.set_content("Not Found", "text/plain");
+				}
+			}
+
+			Json::Value root;
+			root["total"] = GetTotalDownload();
+			root["current"] = GetCurrentDownload();
+			res.set_content(root.toStyledString(), "application/json");
+		}
+	});
+
+	// svr.bind_to_port("localhost", 12345);
+	svr.listen("localhost", 12345);
+
 	if (m_hGameProcess)
 	{
 		WaitForSingleObject(m_hGameProcess, INFINITE);
@@ -244,6 +291,9 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 	{
 		// 先查看本地是否存在这个文件
 		std::string strLocalFile = download;
+		std::string strPage = "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download;
+		std::replace(strPage.begin(), strPage.end(), '\\', '/');
+
 		std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
 
 		// 对比MD5
@@ -256,12 +306,12 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 				continue;
 			}
 		}
-
+		
 		// 删除本地文件
 		std::filesystem::remove(strLocalFile);
 		// 下载新文件
 		httplib::Client cli(strHost, wPort);
-		auto res = cli.Get(std::to_string(it->second.m_qwTime) + "/" + download);
+		auto res = cli.Get(strPage);
 		if (res && res->status == 200) {
 			std::ofstream ofs(strLocalFile, std::ios::binary);
 			ofs.write(res->body.c_str(), res->body.size());

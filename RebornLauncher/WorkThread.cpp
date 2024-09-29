@@ -70,6 +70,7 @@ DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 DWORD WorkThread::Run()
 {
 	// 先把本地的Version.dat文件读取出来
+	std::string strLocalVersionDatMd5;
 	{
 		std::cout << "9999999999999999999" << std::endl;
 		std::string strLocalVersionDatContent;
@@ -81,6 +82,7 @@ DWORD WorkThread::Run()
 			ifs.close();
 		}
 		std::cout << "aaaaaaaaaaaaaaaaaaaaaaa" << std::endl;
+		strLocalVersionDatMd5 = FileHash::string_md5(strLocalVersionDatContent);
 
 		if (!strLocalVersionDatContent.empty())
 		{
@@ -138,14 +140,21 @@ DWORD WorkThread::Run()
 		httplib::Client cli2(strVersionDatUrl,wPort);
 		auto res2 = cli2.Get("/Version.dat");
 		if (res2 && res2->status == 200) {
-			std::string strVersionDatContent = DecryptVersionDat(res2->body);
+			const std::string strVersionDatContent = DecryptVersionDat(res2->body);
 			// 这是一个以上结构的JSON内容
 			Json::Value root;
 			Json::Reader reader;
 			if (reader.parse(strVersionDatContent, root)) {
+				// 获取远程的MD5
+				std::string strRemoteVersionDatMd5 = FileHash::string_md5(res2->body);
 				// 获取版本号
-				if (m_qwVersion != root["time"].asInt64())
+				if (strRemoteVersionDatMd5 != strLocalVersionDatMd5)
 				{
+					// 保存到本地
+					std::ofstream ofs("Version.dat", std::ios::binary);
+					ofs.write(res2->body.data(), res2->body.size());
+					ofs.close();
+
 					m_qwVersion = root["time"].asInt64();
 					m_mapFiles.clear();
 					// 获取文件信息
@@ -166,11 +175,6 @@ DWORD WorkThread::Run()
 					for (auto& download : downloadList) {
 						m_vecRunTimeList.push_back(download.asString());
 					}
-
-					// 保存到本地
-					std::ofstream ofs("Version.dat", std::ios::binary);
-					ofs.write(res2->body.c_str(), res2->body.size());
-					ofs.close();
 				}
 			}
 		}
@@ -181,10 +185,15 @@ DWORD WorkThread::Run()
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
+	unsigned long long dwTick = GetTickCount64();
+
+
 	// 把MD5写到MAP中
 	WriteDataToMapping();
 
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+	unsigned long long dwNewTick = GetTickCount64();
+	std::cout << "WriteDataToMapping 花费时间:" << dwNewTick - dwTick << std::endl;
+	dwTick = dwNewTick;
 
 	// 启动游戏
 	STARTUPINFO si = { sizeof(si) };
@@ -192,6 +201,10 @@ DWORD WorkThread::Run()
 	if (!CreateProcess(L"MapleReborn.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
 		HandleError("CreateProcess failed");
 	}
+
+	// Create进程花费时间
+	dwNewTick = GetTickCount64();
+	std::cout << "CreateProcess 花费时间:" << dwNewTick - dwTick << std::endl;
 
 	m_hGameProcess = pi.hProcess;
 
@@ -224,8 +237,11 @@ DWORD WorkThread::Run()
 				auto ret = cli.Get(strPage);
 				if (ret && ret->status == 200)
 				{
+					// std::filesystem::create_directories(strLocalFile);
+					// 提取目录
+					std::filesystem::path filePath = strLocalFile;
+					std::filesystem::create_directories(filePath.parent_path());
 					std::ofstream ofs(strLocalFile, std::ios::binary);
-					std::filesystem::create_directories(it->first);
 					ofs.write(ret->body.c_str(), ret->body.size());
 					ofs.close();
 					res.status = 200;
@@ -244,6 +260,11 @@ DWORD WorkThread::Run()
 			res.status = 200;
 			res.set_content("OK", "text/plain");
 			std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+		}
+		else {
+			std::cout << "没有这个文件" << strPage <<std::endl;
+			res.status = 404;
+			res.set_content("404", "text/palin");
 		}
 	});
 

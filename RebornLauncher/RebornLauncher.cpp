@@ -397,8 +397,14 @@ void MoveToDirectory(LPCTSTR lpTargetDir) {
     TCHAR newPath[MAX_PATH];
     swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, FileName);
 	// 先清除旧文件
-	DeleteFile(newPath);
-    MoveFile(currentPath, newPath);
+    if (!DeleteFile(newPath))
+    {
+		std::wcout <<__FILEW__<<":"<<__LINE__<<TEXT( "删除失败:") << newPath << TEXT("err:")<<GetLastError()<<std::endl;
+    }
+    if (!CopyFile(currentPath, newPath,TRUE))
+    {
+        std::wcout << __FILEW__ << ":" << __LINE__ << currentPath << TEXT("-->") << newPath << TEXT("移动失败:") << newPath << TEXT("err:") << GetLastError() << std::endl;
+    }
 }
 
 bool IsInMapleRebornDir() {
@@ -409,11 +415,16 @@ bool IsInMapleRebornDir() {
     // 获取文件名
     TCHAR* fileName = PathFindFileName(filePath);
 
+    std::cout << "2222222222222222222222222222" << std::endl;
 	std::wstring str = filePath;
     if (str.find(TEXT("MapleReborn")) != std::string::npos)
     {
+        std::cout << "aaa" << std::endl;
+        std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
         return true;
     }
+
+    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << TEXT("失败") << TEXT(":") << __LINE__ << TEXT(" ") << str << std::endl;
 
     //// 去掉文件名，保留目录路径
     //*fileName = '\0';
@@ -445,6 +456,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // 调用GDI+库准备
 
     // MessageBox(NULL, TEXT("0000000000000000"), TEXT("err"), MB_OK);
+    std::wcout << TEXT("Start:") << lpCmdLine << std::endl;
+
 
     // 桌看当前是不是在桌面，或是在C盘目录下 如果是桌面，就把自己移到D盘(没有D盘就E盘，依次…… 如果都没有，就移到C:\MapleReborn 目录下面。
     HRESULT hr = CoInitialize(NULL);
@@ -452,13 +465,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		return -1;
 	}
 
-    // MessageBox(NULL, TEXT("1111111111111111111"), TEXT("err"), MB_OK);
+    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
+    // MessageBox(NULL, TEXT("1111111111111111111"), TEXT("err"), MB_OK);
+    std::cout << "111111111111111111111111111111111" << std::endl;
 #ifndef _DEBUG
     if (!IsInMapleRebornDir())
     {
        //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
-		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn");
+		LPCTSTR lpTargetDir = TEXT("C:\\ynk ");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
 		for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
             // 创建目录
@@ -494,9 +509,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         // 查看目标进程是否已启动，已启动就不再创建
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, fileName);
-        if (!IsProcessRunning(newPath))
-            ShellExecute(NULL, TEXT("open"), newPath, NULL, NULL, SW_SHOWNORMAL);
+        if (!IsProcessRunning(newPath)) {
+			ShellExecute(NULL, TEXT("open"), newPath, currentPath, lpTargetDir, SW_SHOWNORMAL);
+            ExitProcess(0);
+        }
         return 0;
+    }
+    else
+    {
+        if (lpCmdLine)
+        {
+            DeleteFile(lpCmdLine);
+        }
     }
 #endif
 

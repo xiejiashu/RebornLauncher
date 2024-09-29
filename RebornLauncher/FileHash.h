@@ -4,6 +4,6 @@
 
 class FileHash {
 public:
-	// static std::string string_md5(std::wstring const& str);
+	static std::string string_md5(std::string const& str);
 	static std::string file_md5(std::string const& filename);
 };

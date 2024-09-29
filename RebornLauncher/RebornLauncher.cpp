@@ -448,9 +448,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
 
+#ifdef _DEBUG
     AllocConsole();
-    FILE* stream;
+    FILE* stream = NULL;
     freopen_s(&stream, "CONOUT$", "w", stdout); //CONOUT$
+#endif
 
     // TODO: 在此处放置代码。
     // 调用GDI+库准备

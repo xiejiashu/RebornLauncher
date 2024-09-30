@@ -11,6 +11,43 @@
 
 #pragma comment(lib, "advapi32.lib")
 
+std::string wstr2str(const std::wstring& wstr) {
+	std::string result;
+	//获取缓冲区大小，并申请空间，缓冲区大小事按字节计算的  
+	int len = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), wstr.size(), NULL, 0, NULL, NULL);
+	char* buffer = new char[len + 1];
+	if (!buffer)
+		return "";
+
+	memset(buffer, 0, len + 1);
+	//宽字节编码转换成多字节编码  
+	WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), wstr.size(), buffer, len, NULL, NULL);
+	buffer[len] = '\0';
+	//删除缓冲区并返回值  
+	result.append(buffer);
+	delete[] buffer;
+	return result;
+}
+
+std::wstring str2wstr(const std::string& str, int strLen) {
+	int hLen = strLen;
+	if (strLen < 0)
+		hLen = str.length();
+	std::wstring result;
+	//获取缓冲区大小，并申请空间，缓冲区大小按字符计算  
+	int len = MultiByteToWideChar(CP_ACP, 0, str.c_str(), hLen, NULL, 0);
+	WCHAR* buffer = new WCHAR[len + 1];
+	if (!buffer)
+		return L"";
+	//多字节编码转换成宽字节编码  
+	MultiByteToWideChar(CP_ACP, 0, str.c_str(), hLen, buffer, len);
+	buffer[len] = '\0';             //添加字符串结尾  
+	//删除缓冲区并返回值  
+	result.append(buffer);
+	delete[] buffer;
+	return result;
+}
+
 WorkThread::WorkThread()
 {
 	// 启动线程
@@ -375,6 +412,9 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		std::replace(strPage.begin(), strPage.end(), '\\', '/');
 
 		std::cout <<__FUNCTION__<<":" << strPage << std::endl;
+		m_strCurrentDownload =  str2wstr(strLocalFile,strLocalFile.length());
+		m_nCurrentDownloadSize = m_mapFiles[download].m_qwSize;
+		m_nCurrentDownloadProgress = 0;
 
 		// 对比MD5
 		auto it = m_mapFiles.find(strLocalFile);
@@ -403,7 +443,12 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		// 下载新文件
 		httplib::Client cli(strHost, wPort);
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-		auto res = cli.Get(strPage);
+		httplib::Progress progress([this](uint64_t current, uint64_t total)->bool {
+			m_nCurrentDownloadProgress = current;
+			m_nCurrentDownloadSize = total;
+			return true;
+		});
+		auto res = cli.Get(strPage,progress);
 		std::cout << __FILE__ << ":" << __LINE__ << strPage << std::endl;
 		if (res && res->status == 200) {
 			std::ofstream ofs(strLocalFile, std::ios::binary);
@@ -424,6 +469,30 @@ int WorkThread::GetTotalDownload() const
 int WorkThread::GetCurrentDownload() const
 {
 	return m_nCurrentDownload;
+}
+
+std::wstring WorkThread::GetCurrentDownloadFile()
+{
+	// 自动锁
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return m_strCurrentDownload;
+}
+
+void WorkThread::SetCurrentDownloadFile(const std::wstring& strFile)
+{
+	// 自动锁
+	std::lock_guard<std::mutex> lock(m_mutex);
+	m_strCurrentDownload = strFile;
+}
+
+int WorkThread::GetCurrentDownloadSize() const
+{
+	return m_nCurrentDownloadSize;
+}
+
+int WorkThread::GetCurrentDownloadProgress() const
+{
+	return m_nCurrentDownloadProgress;
 }
 
 void WorkThread::WriteDataToMapping()

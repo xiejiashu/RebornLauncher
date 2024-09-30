@@ -56,6 +56,19 @@ constexpr SIZE g_szWindow = { 1024, 768 };
 
 // 进度条进度
 float g_fProgressTotal = 0.0;
+// 当前进度条
+float g_fProgressCurrent = 0.0;
+// 当前文件总大小
+int g_nCurrentFileSize = 0;
+// 当前文件已下载大小
+int g_nCurrentFileDownloaded = 0;
+// 当前文件名
+std::wstring g_strCurrentFile;
+
+std::shared_ptr<Sprite> g_pigSprite = nullptr;
+
+// 进度条开始位置
+constexpr POINT g_ptProgress = { 0, 50 };
 
 //猪的纹理 系列帧
 // Gdiplus::Bitmap *g_hPigBitmap[7] = { NULL };
@@ -176,6 +189,7 @@ void OnDraw(HDC hdc,const RECT &rect)
     GraphicsPath path;
     path.AddRectangle(Rect(0, 0, progressBarWidth, rect.bottom)); // 左侧不呼吸区域
     Region nonBreathingRegion(&path);  // 非呼吸区域
+	int curProgressBarWidth = (int)(rect.right * g_fProgressCurrent);  // 计算已经不呼吸的区域的宽度
     
     // 半透明和颜色渐变的渲染
     ColorMatrix colorMatrixBreathing = {
@@ -250,7 +264,40 @@ void OnDraw(HDC hdc,const RECT &rect)
         graphics.DrawImage(g_hPigBitmap[frame], pigX,pigY);  // 你可以指定 x, y 坐标
     }*/
 
+
+    // 绘制深蓝色进度条
+    LinearGradientBrush brush(Rect(0, 0, curProgressBarWidth, rect.bottom), Color(255, 0, 0, 255), Color(255, 0, 0, 128), LinearGradientModeHorizontal);
+    graphics.FillRectangle(&brush, 0, rect.bottom - g_ptProgress.y, curProgressBarWidth, rect.bottom);
+    // 绘制光晕效果
+    Pen pen(Color(128, 0, 0, 255), 10);
+    pen.SetLineJoin(LineJoinRound);
+    graphics.DrawRectangle(&pen, 0, rect.bottom - g_ptProgress.y, curProgressBarWidth, rect.bottom);
+
+    // 绘制透明区域
+    SolidBrush transparentBrush(Color(128, 255, 255, 0));
+    graphics.FillRectangle(&transparentBrush, curProgressBarWidth, rect.bottom - g_ptProgress.y, rect.right - curProgressBarWidth, rect.bottom);
+
+    // 在进度条上渲染当下载文件的名字 当前量/总量
+	FontFamily fontFamily(L"Arial");
+	Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
+	SolidBrush solidBrush(Color(255, 255, 255, 255));
+	std::wstring str = g_strCurrentFile + TEXT(" ") + std::to_wstring(g_nCurrentFileDownloaded) + TEXT("/") + std::to_wstring(g_nCurrentFileSize);
+	graphics.DrawString(str.c_str(), str.length(), &font, PointF(0, rect.bottom - g_ptProgress.y - 30), &solidBrush);
+
+    // 设置猪的位置
+	g_pigSprite->SetX(g_ptProgress.x + g_fProgressCurrent * rect.right);
+	g_pigSprite->SetY(rect.bottom - g_ptProgress.y - 30);
+	// 绘制猪
+
 	g_pSpriteMgr->Draw(graphics);
+
+
+
+
+    // auto brush1 = SolidBrush(Color(255, 0, 0, 0));
+    // auto brush2 = SolidBrush(Color(255, 255, 0, 0));
+    // graphics.FillRectangle(&brush1, 0, 0, progressBarWidth, rect.bottom);
+    // graphics.FillRectangle(&brush2, progressBarWidth, 0, rect.right - progressBarWidth, rect.bottom);
 }
 
 void UpdateLoadingAnimation(HWND hWnd)
@@ -566,6 +613,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			g_fProgressTotal = workThread.GetCurrentDownload() * 1.f / workThread.GetTotalDownload() * 1.f;
         }
 
+        if (workThread.GetCurrentDownloadSize() > 0)
+        {
+            g_nCurrentFileSize = workThread.GetCurrentDownloadSize();
+            g_nCurrentFileDownloaded = workThread.GetCurrentDownloadProgress();
+
+
+            g_fProgressCurrent = g_nCurrentFileDownloaded * 1.f / g_nCurrentFileSize * 1.f;
+        }
+
         g_pSpriteMgr->Update(GetTickCount64() % UINT_MAX);
 
         UpdateLoadingAnimation( msg.hwnd );
@@ -745,7 +801,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			pSprite->SetJumpHeight(100);
 			pSprite->SetJumpSpeed(10);
 			pSprite->SetJumpAcceleration(1);
-            pSprite->SetMoveSpeed(5);
+            pSprite->SetMoveSpeed(1);
 
             // 
 			Frame* pFrame = new Frame();
@@ -769,6 +825,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 
 			pSprite->SetBitmapFrame(SpriteState::Jump, pFrame);
+
+            g_pigSprite = pSprite;
+            g_pigSprite->MoveRight();
 
             return true;
         });

@@ -1,6 +1,7 @@
 #include "VersionConfig.h"
 #include <map>
 #include <vector>
+#include <mutex>
 class WorkThread
 {
 public:
@@ -22,6 +23,14 @@ public:
 	int GetTotalDownload() const;
 	// 获取当前下载
 	int GetCurrentDownload() const;
+	// 当前文件
+	std::wstring GetCurrentDownloadFile();
+	// 设置
+	void SetCurrentDownloadFile(const std::wstring& strFile);
+
+	int GetCurrentDownloadSize() const;
+	int GetCurrentDownloadProgress() const;
+	
 	// 把数据写入映射内存
 	void WriteDataToMapping();
 private:
@@ -41,9 +50,18 @@ private:
 	int m_nTotalDownload{ 0 };
 	// 当前下载的文件数量
 	int m_nCurrentDownload{ 0 };
+	// 当前下载的文件名
+	std::wstring m_strCurrentDownload;
+	// 当前下载的文件大小
+	int m_nCurrentDownloadSize{ 0 };
+	// 当前下载的文件进度
+	int m_nCurrentDownloadProgress{ 0 };
 
 	// 目标进程
 	HANDLE m_hGameProcess{ nullptr };
 
 	std::vector<HANDLE> m_hFileMappings;
+
+	// stl库的锁 tmux
+	std::mutex m_mutex;
 };

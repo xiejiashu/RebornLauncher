@@ -5,7 +5,7 @@
 class WorkThread
 {
 public:
-	WorkThread();
+	WorkThread(HWND hWnd, const std::wstring& strModulePath,const std::wstring& strModuleName,const std::wstring& strModuleDir);
 	~WorkThread();
 public:
 	static DWORD WINAPI ThreadProc(LPVOID lpParameter);
@@ -33,7 +33,18 @@ public:
 	
 	// 把数据写入映射内存
 	void WriteDataToMapping();
+
+	// 网络请求线程
+	void WebServiceThread();
+
+	void Stop();
 private:
+
+	BOOL m_bRun{ TRUE };
+
+	// 进程名
+	LPCTSTR m_szProcessName = TEXT("MapleReborn.exe");
+
 	// 当前版本号
 	int64_t m_qwVersion{ 0 };
 	std::map<std::string, VersionConfig> m_mapFiles;
@@ -58,10 +69,21 @@ private:
 	int m_nCurrentDownloadProgress{ 0 };
 
 	// 目标进程
-	HANDLE m_hGameProcess{ nullptr };
+	HANDLE m_hGameProcess[2]; // 双开
 
 	std::vector<HANDLE> m_hFileMappings;
 
+	bool m_bUpdateSelf{ false };
+
+	// 本进程模块全路径名
+	std::wstring m_strModulePath;
+	// 本进程文件名
+	std::wstring m_strModuleName;
+	// 本进程目录
+	std::wstring m_strModuleDir;
+
 	// stl库的锁 tmux
 	std::mutex m_mutex;
+
+	HWND m_hMainWnd{ nullptr };
 };

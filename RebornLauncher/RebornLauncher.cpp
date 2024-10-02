@@ -25,12 +25,14 @@
 #include "SpriteManager.h"
 #include "ResourceManager.h"
 #include "WorkThread.h"
+#include <httplib.h>
 
 
 #pragma comment (lib,"Gdiplus.lib")
 #pragma comment (lib,"Shlwapi.lib")
 
 #define MAX_LOADSTRING 100
+
 using namespace Gdiplus;
 
 // 全局变量:
@@ -43,12 +45,15 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+void InitTrayIcon(HWND hWnd);
 
 // GDI+ 全局变量
 ULONG_PTR g_gdiplusToken = 0;
 HBITMAP g_hBitmap = NULL;
 HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
+NOTIFYICONDATA nid;
+
 // 窗口当前位置
 POINT g_ptWindow = { 831, 455 };
 // 窗口大小
@@ -67,6 +72,13 @@ std::wstring g_strCurrentFile;
 
 std::shared_ptr<Sprite> g_pigSprite = nullptr;
 
+// 当前文件模块路径包含文件名
+std::wstring g_strCurrentModulePath;
+// 当前exe的名字
+std::wstring g_strCurrentExeName;
+// 当前路径，不包含文件名
+std::wstring g_strWorkPath;
+
 // 进度条开始位置
 constexpr POINT g_ptProgress = { 0, 50 };
 
@@ -76,6 +88,9 @@ Gdiplus::Bitmap* g_hBkBitmap = nullptr;
 
 SpriteManager* g_pSpriteMgr = nullptr;
 ResourceManager* g_pResMgr = nullptr;
+
+// 渲染开关
+bool g_bRendering = true;
 
 // 初始化 GDI+
 void InitGDIPlus(ULONG_PTR& gdiplusToken) {
@@ -90,6 +105,29 @@ HBITMAP LoadImageWithAlpha(LPCSTR filePath) {
     bitmap->GetHBITMAP(Color(0, 0, 0, 0), &hBitmap);
     delete bitmap;
     return hBitmap;
+}
+
+// 删除托盘图标
+void DeleteTrayIcon() {
+	Shell_NotifyIcon(NIM_DELETE, &nid);
+	DestroyIcon(nid.hIcon);
+    g_bRendering = true;
+}
+
+void MinimizeToTray(HWND hWnd) {
+    ShowWindow(hWnd, SW_HIDE);
+    InitTrayIcon(hWnd);
+    g_bRendering = false;
+	// SetLayeredWindowAttributes(hWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+}
+
+void RestoreFromTray(HWND hWnd) {
+    ShowWindow(hWnd, SW_SHOW);
+    DeleteTrayIcon();
+	SetForegroundWindow(hWnd);
+    g_bRendering = true;
+	// 解除窗口透明
+	// SetLayeredWindowAttributes(hWnd, RGB(0, 0, 0), 255, LWA_ALPHA);
 }
 
 // 从导入资源加载图像，而不是文件
@@ -280,9 +318,11 @@ void OnDraw(HDC hdc,const RECT &rect)
     // 在进度条上渲染当下载文件的名字 当前量/总量
 	FontFamily fontFamily(L"Arial");
 	Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
-	SolidBrush solidBrush(Color(255, 255, 255, 255));
+	SolidBrush solidBrush(Color(255, 128, 255, 255));
 	std::wstring str = g_strCurrentFile + TEXT(" ") + std::to_wstring(g_nCurrentFileDownloaded) + TEXT("/") + std::to_wstring(g_nCurrentFileSize);
-	graphics.DrawString(str.c_str(), str.length(), &font, PointF(0, rect.bottom - g_ptProgress.y - 30), &solidBrush);
+    // 渲染到进度条中间
+	graphics.DrawString(str.c_str(), str.length(), &font, PointF((rect.right - str.length() * 16) / 2, rect.bottom - g_ptProgress.y - 30), &solidBrush);
+    // graphics.DrawString(str.c_str(), str.length(), &font, PointF(0, rect.bottom - g_ptProgress.y - 30), &solidBrush);
 
     // 设置猪的位置
 	g_pigSprite->SetX(g_ptProgress.x + g_fProgressCurrent * rect.right);
@@ -302,6 +342,8 @@ void OnDraw(HDC hdc,const RECT &rect)
 
 void UpdateLoadingAnimation(HWND hWnd)
 {
+    if (g_bRendering == false)
+        return;
 	//HDC hdc = GetDC(hWnd);
 	//HDC hdcMem = CreateCompatibleDC(hdc);
 	//RECT rect;
@@ -437,34 +479,35 @@ bool IsProcessRunning(const TCHAR* exePath) {
 }
 
 void MoveToDirectory(LPCTSTR lpTargetDir) {
-    TCHAR currentPath[MAX_PATH];
-    GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
+    // TCHAR currentPath[MAX_PATH];
+    // GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
     // 提取文件名
-	TCHAR* FileName = PathFindFileName(currentPath);
+	// TCHAR* FileName = PathFindFileName(g_strCurrentModulePath.c_str());
     TCHAR newPath[MAX_PATH];
-    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, FileName);
+    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
 	// 先清除旧文件
     if (!DeleteFile(newPath))
     {
 		std::wcout <<__FILEW__<<":"<<__LINE__<<TEXT( "删除失败:") << newPath << TEXT("err:")<<GetLastError()<<std::endl;
     }
-    if (!CopyFile(currentPath, newPath,TRUE))
+    if (!CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE))
     {
-        std::wcout << __FILEW__ << ":" << __LINE__ << currentPath << TEXT("-->") << newPath << TEXT("移动失败:") << newPath << TEXT("err:") << GetLastError() << std::endl;
+        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath << TEXT("移动失败:") << newPath << TEXT("err:") << GetLastError() << std::endl;
     }
 }
 
 bool IsInMapleRebornDir() {
     // 获取当前模块的文件路径
-    TCHAR filePath[MAX_PATH];
-    GetModuleFileName(NULL, filePath, MAX_PATH);
+    // TCHAR filePath[MAX_PATH];
+    // GetModuleFileName(NULL, filePath, MAX_PATH);
 
     // 获取文件名
-    TCHAR* fileName = PathFindFileName(filePath);
+    // TCHAR* fileName = PathFindFileName(filePath);
 
     std::cout << "2222222222222222222222222222" << std::endl;
-	std::wstring str = filePath;
-    if (str.find(TEXT("MapleReborn")) != std::string::npos)
+	std::wstring str = g_strCurrentModulePath.c_str();
+	if (str.find(TEXT("MapleReborn")) != std::string::npos 
+        || str.find(TEXT("RebornV")) != std::string::npos)
     {
         std::cout << "aaa" << std::endl;
         std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
@@ -486,6 +529,38 @@ bool IsInMapleRebornDir() {
     return false;
 }
 
+bool IsProcessRunning(DWORD dwProcessId) {
+    bool bRet = false;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot) {
+        PROCESSENTRY32 pe;
+        pe.dwSize = sizeof(PROCESSENTRY32);
+        if (Process32First(hSnapshot, &pe)) {
+            do {
+                if (pe.th32ProcessID == dwProcessId) {
+                    bRet = true;
+                    break;
+                }
+            } while (Process32Next(hSnapshot, &pe));
+        }
+        CloseHandle(hSnapshot);
+    }
+    return bRet;
+}
+
+void InitTrayIcon(HWND hWnd) {
+    // 设置托盘图标数据
+    nid.cbSize = sizeof(NOTIFYICONDATA);
+    nid.hWnd = hWnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = LoadIcon(hInst, MAKEINTRESOURCE(IDI_APPLICATION)); // 使用你的图标资源
+    lstrcpy(nid.szTip, L"RebornLauncher");
+    // 添加托盘图标
+    Shell_NotifyIcon(NIM_ADD, &nid);
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -494,6 +569,85 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
+
+	g_strCurrentModulePath.resize(MAX_PATH);
+	GetModuleFileName(hInstance, g_strCurrentModulePath.data(), MAX_PATH);
+	g_strCurrentExeName = PathFindFileName(g_strCurrentModulePath.c_str());
+    g_strWorkPath.resize(MAX_PATH);
+	GetCurrentDirectory(MAX_PATH, (LPTSTR)g_strWorkPath.data());
+
+#ifndef _DEBUG
+	std::wofstream outLog(g_strCurrentExeName + TEXT(".log"));
+    // 保存原始的缓冲区指针
+    std::wstreambuf* originalCoutBuffer = std::wcout.rdbuf();
+    // 将 std::cout 的缓冲区指针重定向到文件
+    std::wcout.rdbuf(outLog.rdbuf());
+
+	std::ofstream outLogA("Launcher.log");
+	std::streambuf* originalCoutBufferA = std::cout.rdbuf();
+	std::cout.rdbuf(outLogA.rdbuf());
+#endif
+
+	DWORD dwPID = GetProfileInt(TEXT("MapleReborn"), TEXT("pid"),0);
+    if (dwPID)
+    {
+        // 查看进程是否活着
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
+        if (IsProcessRunning(dwPID))
+        {
+            // 判断进程是否活着的
+			//DWORD dwExitCode = 0;
+   //         DWORD dwResult = WaitForSingleObject(hProcess, 0);
+   //         if (dwResult != WAIT_TIMEOUT)
+   //         {
+   //             // 进程还活着
+   //             CloseHandle(hProcess);
+
+
+   //         }
+            httplib::Client cli("localhost", 12345);
+            auto res = cli.Get("/RunClient");
+            if (res && res->status == 200)
+            {
+                // 启动成功
+            }
+            else
+            {
+				MessageBox(NULL, TEXT("最多只能启动2个客户端"), TEXT("err"), MB_OK);
+                // 启动失败
+            }
+            return 0;
+        }
+    }
+
+    // 把当前PID写入
+	DWORD dwCurrentPID = GetCurrentProcessId();
+    TCHAR szPID[32] = { 0 };
+	_itow_s(dwCurrentPID, szPID, 10);
+	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), szPID);
+
+    // 结束 MapleReborn 下的 Client1PID,Client2PID
+	DWORD dwClient1PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client1PID"), 0);
+	DWORD dwClient2PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client2PID"), 0);
+	if (dwClient1PID)
+	{
+		HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwClient1PID);
+		if (hProcess)
+		{
+			TerminateProcess(hProcess, 0);
+			CloseHandle(hProcess);
+		}
+	}
+
+    if (dwClient2PID)
+    {
+        HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwClient1PID);
+        if (hProcess)
+        {
+            TerminateProcess(hProcess, 0);
+            CloseHandle(hProcess);
+        }
+    }
 
 #ifdef _DEBUG
     AllocConsole();
@@ -522,7 +676,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     if (!IsInMapleRebornDir())
     {
        //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
-		LPCTSTR lpTargetDir = TEXT("C:\\ynk ");
+		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn ");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
 		for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
             // 创建目录
@@ -548,18 +702,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
 		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
         // 获取当前模块的名字
-		TCHAR currentPath[MAX_PATH];
-		GetModuleFileName(hInstance, currentPath, MAX_PATH);
+		// TCHAR currentPath[MAX_PATH];
+		// GetModuleFileName(hInstance, currentPath, MAX_PATH);
         // 把名字提取出来拼，把路径去掉
-		TCHAR* fileName = PathFindFileName(currentPath);
-		CreateShortcut(shortcutPath, lpTargetDir, fileName);
+		// TCHAR* fileName = PathFindFileName(g_strCurrentModulePath.c_str());
+		CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
         // MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
 
         // 查看目标进程是否已启动，已启动就不再创建
 		TCHAR newPath[MAX_PATH];
-		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, fileName);
+		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
         if (!IsProcessRunning(newPath)) {
-			ShellExecute(NULL, TEXT("open"), newPath, currentPath, lpTargetDir, SW_SHOWNORMAL);
+			ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
+            WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
             ExitProcess(0);
         }
         return 0;
@@ -569,6 +724,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         if (lpCmdLine)
         {
             DeleteFile(lpCmdLine);
+
+            // 如果当前文件名不是 RebornLauncher.exe 那复制出一个 RebornLauncher.exe
+			if (g_strCurrentExeName != TEXT("RebornLauncher.exe"))
+			{
+				TCHAR newPath[MAX_PATH];
+				swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
+				CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
+				// 启动新的进程
+				ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
+                WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+				ExitProcess(0);
+			}
         }
     }
 #endif
@@ -581,7 +748,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
     std::cout << "77777777777777" << std::endl;
-	WorkThread workThread;
+
 
     // 执行应用程序初始化:
     if (!InitInstance (hInstance, true))
@@ -589,6 +756,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         std::cout << "888888888888" << std::endl;
         return FALSE;
     }
+
+    WorkThread workThread(g_hWnd, g_strCurrentModulePath, g_strCurrentExeName, g_strWorkPath);
+    InitTrayIcon(g_hWnd);
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_REBORNLAUNCHER));
 
@@ -618,8 +788,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             g_nCurrentFileSize = workThread.GetCurrentDownloadSize();
             g_nCurrentFileDownloaded = workThread.GetCurrentDownloadProgress();
 
-
             g_fProgressCurrent = g_nCurrentFileDownloaded * 1.f / g_nCurrentFileSize * 1.f;
+			g_strCurrentFile = workThread.GetCurrentDownloadFile();
         }
 
         g_pSpriteMgr->Update(GetTickCount64() % UINT_MAX);
@@ -630,9 +800,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		if (msg.message == WM_QUIT)
 		{
             std::cout << "eeeeeeeeeeeeeeeeeeee" << std::endl;
+            workThread.Stop();
 			break;
 		}
     }
+
+	// 把配置项的进程ID清空
+	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
 
     std::cout << "ooooooooooooooooooo" << std::endl;
 
@@ -836,6 +1010,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         SetLayeredWindow(hWnd, g_hBitmap);
 		break;
 	}
+    case WM_TRAYICON:
+        if (lParam == WM_LBUTTONDOWN || lParam == WM_RBUTTONDOWN) {
+            // 处理托盘图标的点击事件，例如显示窗口
+            // ShowWindow(hWnd, SW_RESTORE);
+            // SetForegroundWindow(hWnd);
+            // DeleteTrayIcon();
+            RestoreFromTray(hWnd);
+        }
+        break;
+    case WM_MINIMIZE_TO_TRAY:
+		// 最小化到托盘
+		MinimizeToTray(hWnd);
+		break;
+    case WM_DELETE_TRAY:
+        RestoreFromTray(hWnd);
+        break;
+	case WM_SYSCOMMAND:
+		if ((wParam & 0xFFF0) == SC_MINIMIZE) {
+			// 最小化到托盘
+            MinimizeToTray(hWnd);
+			return 0;
+		}
+		break;
+        // 窗口被最小化
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
@@ -858,14 +1056,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             EndPaint(hWnd, &ps);
         }
         break;
-        case WM_MOVE:
-        {
-            // 获取窗口当前位置
-            g_ptWindow.x = LOWORD(lParam);
-            g_ptWindow.y = HIWORD(lParam);
-            break;
-        }
+    case WM_MOVE:
+    {
+        // 获取窗口当前位置
+        g_ptWindow.x = LOWORD(lParam);
+        g_ptWindow.y = HIWORD(lParam);
+        break;
+    }
     case WM_DESTROY:
+        // 删除托盘图标
+        DeleteTrayIcon();
         PostQuitMessage(0);
         break;
     default:

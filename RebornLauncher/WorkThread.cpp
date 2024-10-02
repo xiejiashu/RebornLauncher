@@ -8,8 +8,12 @@
 #include "FileHash.h"
 #include <TlHelp32.h>
 #include <Psapi.h>
+#include <shellapi.h>
 
 #pragma comment(lib, "advapi32.lib")
+extern bool g_bRendering;
+extern bool IsProcessRunning(DWORD dwProcessId);
+extern float g_fProgressTotal;
 
 std::string wstr2str(const std::wstring& wstr) {
 	std::string result;
@@ -48,7 +52,43 @@ std::wstring str2wstr(const std::string& str, int strLen) {
 	return result;
 }
 
-WorkThread::WorkThread()
+void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::string& data) {
+	// 打开文件，允许共享读写
+	HANDLE hFile = CreateFile(
+		strLocalFile.c_str(),                // 文件名
+		GENERIC_READ | GENERIC_WRITE,        // 读写访问
+		FILE_SHARE_READ | FILE_SHARE_WRITE,  // 共享读写
+		NULL,                                // 默认安全属性
+		OPEN_ALWAYS,                         // 如果文件不存在则创建
+		FILE_ATTRIBUTE_NORMAL,               // 普通文件属性
+		NULL                                 // 不使用模板文件
+	);
+
+	if (hFile == INVALID_HANDLE_VALUE) {
+		std::cerr << "无法打开文件，错误代码: " << GetLastError() << std::endl;
+		return;
+	}
+
+	// 写入数据
+	DWORD dwBytesWritten = 0;
+	if (!WriteFile(hFile, data.c_str(), data.size(), &dwBytesWritten, NULL)) {
+		std::cerr << "无法写入文件，错误代码: " << GetLastError() << std::endl;
+	}
+
+	// 关闭文件句柄
+	CloseHandle(hFile);
+}
+
+
+WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir)
+	: m_hMainWnd(hWnd), m_strModulePath(strModulePath), m_strModuleName(strModuleName), m_strModuleDir(strModuleDir)
+	, m_bUpdateSelf(false), m_nTotalDownload(0), m_nCurrentDownload(0), m_nCurrentDownloadSize(0), m_nCurrentDownloadProgress(0)
+	, m_hGameProcess{ nullptr }
+	, m_strHost(""), m_wPort(0)
+	, m_qwVersion(0)
+	, m_bRun(TRUE)
+	, m_strCurrentDownload(L"")
+	, m_hThread(nullptr)
 {
 	// 启动线程
 	DWORD dwThreadId = 0;
@@ -62,6 +102,11 @@ WorkThread::WorkThread()
 	{
 		CloseHandle(hFileMapping);
 	}
+
+	std::thread WebTr([this]() {
+		WebServiceThread();
+	});
+	WebTr.detach();
 }
 
 WorkThread::~WorkThread()
@@ -174,6 +219,8 @@ DWORD WorkThread::Run()
 		m_strHost = strVersionDatUrl;
 		m_wPort = wPort;
 
+		std::string strCurrDir = std::filesystem::current_path().string();
+
 		httplib::Client cli2(strVersionDatUrl,wPort);
 		auto res2 = cli2.Get("/Version.dat");
 		if (res2 && res2->status == 200) {
@@ -203,6 +250,21 @@ DWORD WorkThread::Run()
 						config.m_qwSize = fileJson["size"].asInt64();
 						config.m_strPage = fileJson["page"].asString();
 						m_mapFiles[config.m_strPage] = config;
+						// 提取目录 删除文件名
+						std::filesystem::path filePath = config.m_strPage;
+						std::string strPath = filePath.parent_path().string();
+						// 判断目录是否存在，不存在创建
+						if (!strPath.empty() && !std::filesystem::exists(strPath))
+						{
+							std::filesystem::create_directories(strCurrDir + "\\" + strPath);
+						}
+
+						// 判断文件是否存在，不存在创建一个空的
+						if (std::filesystem::exists(strCurrDir + "\\" + config.m_strPage) == false)
+						{
+							std::ofstream ofs(strCurrDir + "\\" + config.m_strPage, std::ios::binary);
+							ofs.close();
+						}
 					}
 
 					m_vecRunTimeList.clear();
@@ -220,6 +282,18 @@ DWORD WorkThread::Run()
 		DownloadRunTimeFile(m_strHost,wPort);
 	} 
 
+	if (m_bUpdateSelf)
+	{
+		Stop();
+		// 启动新更新的 UpdateTemp.exe 用open启动
+		ShellExecute(NULL, L"open", L"UpdateTemp.exe", m_strModulePath.c_str(), m_strModuleDir.c_str(), SW_SHOWNORMAL);
+		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
+		WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+		ExitProcess(0);
+		return 0;
+	}
+
+
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
 	unsigned long long dwTick = GetTickCount64();
@@ -235,94 +309,71 @@ DWORD WorkThread::Run()
 	// 启动游戏
 	STARTUPINFO si = { sizeof(si) };
 	PROCESS_INFORMATION pi;
-	if (!CreateProcess(L"MapleReborn.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
 		HandleError("CreateProcess failed");
 	}
+
+	PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
+	g_bRendering = false;
 
 	// Create进程花费时间
 	dwNewTick = GetTickCount64();
 	std::cout << "CreateProcess 花费时间:" << dwNewTick - dwTick << std::endl;
 
-	m_hGameProcess = pi.hProcess;
-
-	// 监听网络请求
-	httplib::Server svr;
-	svr.Get("/download", [&](const httplib::Request& req, httplib::Response& res) {
-		std::string strPage = req.get_param_value("page");
-		std::cout << "ddddddddddddd download page:"<< strPage << std::endl;
-		auto it = m_mapFiles.find(strPage);
-		if (it != m_mapFiles.end())
-		{
-			std::string strLocalFile = it->first;
-			bool Md5Same = false;
-			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
-				std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
-				Md5Same = it->second.m_strMd5 == strLocalFileMd5;
-			}
-
-			if (Md5Same)
-			{
-				res.status = 200;
-				res.set_content("OK", "text/plain");
-			}
-			else
-			{
-				// 下载
-				httplib::Client cli(m_strHost, m_wPort);
-				strPage = "/Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
-				std::replace(strPage.begin(), strPage.end(), '\\', '/');
-				auto ret = cli.Get(strPage);
-				if (ret && ret->status == 200)
-				{
-					// std::filesystem::create_directories(strLocalFile);
-					// 提取目录
-					std::filesystem::path filePath = strLocalFile;
-					std::filesystem::create_directories(filePath.parent_path());
-					std::ofstream ofs(strLocalFile, std::ios::binary);
-					ofs.write(ret->body.c_str(), ret->body.size());
-					ofs.close();
-					res.status = 200;
-					res.set_content("OK", "text/plain");
-					std::cout << __FILE__<<":" << __LINE__ << std::endl;
-				}
-				else
-				{
-					res.status = 404;
-					res.set_content("Not Found", "text/plain");
-					std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-				}
-			}
-
-			// 返回一个OK就行 不需要json
-			res.status = 200;
-			res.set_content("OK", "text/plain");
-			std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-		}
-		else {
-			std::cout << "没有这个文件" << strPage <<std::endl;
-			res.status = 404;
-			res.set_content("404", "text/palin");
-		}
-	});
-
-	// svr.bind_to_port("localhost", 12345);
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	svr.listen("localhost", 12345);
-
-	if (m_hGameProcess)
-	{
-		WaitForSingleObject(m_hGameProcess, INFINITE);
-	}
-
-	if (pi.hProcess)
-	{
-		CloseHandle(pi.hProcess);
-	}
+	m_hGameProcess[0] = pi.hProcess;
+	// 写入PID
+	TCHAR szPID[32] = { 0 };
+	_itow_s(pi.dwProcessId, szPID, 10);
+	WriteProfileString(TEXT("MapleReborn"), TEXT("Client1PID"), szPID);
 
 	if (pi.hThread)
 	{
 		CloseHandle(pi.hThread);
 	}
+
+	do
+	{
+		bool bHaveGameRun = false;
+		for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
+		{
+			if (m_hGameProcess[0])
+			{
+				DWORD dwResult = WaitForSingleObject(m_hGameProcess[0],0);
+				if (dwResult != WAIT_TIMEOUT)
+				{
+					continue;
+					bHaveGameRun = true;
+				}
+				else {
+					CloseHandle(m_hGameProcess[0]);
+					m_hGameProcess[0] = nullptr;
+				}
+			}
+		}
+
+		// 两个进程都死了，恢复窗口
+		if (bHaveGameRun == false && g_bRendering == false)
+		{
+			PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
+			break;
+		}
+
+		Sleep(1);
+	} while (m_bRun);
+
+	// 收尾处理
+	for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
+	{
+		if (m_hGameProcess[i])
+		{
+			TerminateProcess(m_hGameProcess[i], 0);
+			CloseHandle(m_hGameProcess[i]);
+			m_hGameProcess[i] = nullptr;
+		}
+	}
+
+	CloseHandle(m_hThread);
+	m_hThread = nullptr;
 
 	return 0;
 }
@@ -412,7 +463,7 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		std::replace(strPage.begin(), strPage.end(), '\\', '/');
 
 		std::cout <<__FUNCTION__<<":" << strPage << std::endl;
-		m_strCurrentDownload =  str2wstr(strLocalFile,strLocalFile.length());
+		SetCurrentDownloadFile(str2wstr(strLocalFile, strLocalFile.length()));
 		m_nCurrentDownloadSize = m_mapFiles[download].m_qwSize;
 		m_nCurrentDownloadProgress = 0;
 
@@ -435,6 +486,15 @@ void WorkThread::DownloadRunTimeFile(const std::string& strHost, const short wPo
 		}
 		
 		std::cout << __FILE__ << ":" << __LINE__<< " 文件:" << strLocalFile << std::endl;
+
+		// 如果文件名是自身
+		if (strLocalFile.find("RebornLauncher.exe") != std::string::npos)
+		{
+			// 改个名字
+			strLocalFile = "UpdateTemp.exe";
+			m_bUpdateSelf = true;
+		}
+
 		// 删除本地文件
 		// std::filesystem::remove(strLocalFile);
 		DeleteFileA(strLocalFile.c_str());
@@ -518,4 +578,159 @@ void WorkThread::WriteDataToMapping()
 			m_hFileMappings.push_back(hFileMapping);
 		}
 	}
+}
+
+void WorkThread::WebServiceThread()
+{
+	// 监听网络请求
+	httplib::Server svr;
+	svr.Get("/download", [this](const httplib::Request& req, httplib::Response& res) {
+		g_bRendering = true;
+		g_fProgressTotal = 0;
+		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
+		std::string strPage = req.get_param_value("page");
+		std::cout << "ddddddddddddd download page:" << strPage << std::endl;
+		auto it = m_mapFiles.find(strPage);
+		SetCurrentDownloadFile(str2wstr(strPage,strPage.length()));
+		if (it != m_mapFiles.end())
+		{
+			std::cout << "ddddddddddddd 11111111111 page:" << strPage << std::endl;
+			std::string strLocalFile = it->first;
+			bool Md5Same = false;
+			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+				std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
+				Md5Same = it->second.m_strMd5 == strLocalFileMd5;
+			}
+
+			if (Md5Same)
+			{
+				std::cout << "已存在且MD5相同" << std::endl;
+				res.status = 200;
+				res.set_content("OK", "text/plain");
+			}
+			else
+			{
+				std::cout << "ddddddddddddd 222222222222222 page:" << strLocalFile << std::endl;
+				// 下载
+				httplib::Client cli(m_strHost, m_wPort);
+				strPage = "/Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
+				std::replace(strPage.begin(), strPage.end(), '\\', '/');
+				httplib::Progress progress([this](uint64_t current, uint64_t total)->bool {
+					m_nCurrentDownloadProgress = current;
+					m_nCurrentDownloadSize = total;
+					return true;
+				});
+				auto ret = cli.Get(strPage, progress);
+				if (ret && ret->status == 200)
+				{
+					// std::filesystem::create_directories(strLocalFile);
+					// 提取目录
+					// std::filesystem::path filePath = strLocalFile;
+					// std::filesystem::create_directories(filePath.parent_path());
+					std::cout << "ddddddddddddd 3333333333333 page:" << strLocalFile << std::endl;
+					// 共享读写打开
+
+					std::ofstream ofs(strLocalFile, std::ios::binary);
+					std::cout << "ddddddddddddd 4444444444444444 page:" << strLocalFile << std::endl;
+					// 如果写入失败打印一下
+					if (!ofs)
+					{
+						std::cout << "写入失败:" << GetLastError() << std::endl;
+					}
+					ofs.write(ret->body.c_str(), ret->body.size());
+
+					ofs.close();
+					res.status = 200;
+					res.set_content("OK", "text/plain");
+					std::cout << strLocalFile  <<"写入成功" << std::endl;
+				}
+				else
+				{
+					res.status = 404;
+					res.set_content("Not Found", "text/plain");
+					std::cout << "下载失败" << std::endl;
+				}
+			}
+		}
+		else {
+			std::cout << "没有这个文件" << strPage << std::endl;
+			res.status = 404;
+			res.set_content("404", "text/palin");
+		}
+		PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
+		g_bRendering = false;
+	});
+
+	svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
+
+		for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
+		{
+			// 看进程是否活着
+			if (m_hGameProcess[i])
+			{
+				DWORD dwResult = WaitForSingleObject(m_hGameProcess[0], 0);
+				if (dwResult != WAIT_TIMEOUT)
+				{
+					continue;
+				}
+			}
+
+			// 启动游戏
+			STARTUPINFO si = { sizeof(si) };
+			PROCESS_INFORMATION pi;
+			if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+				HandleError("CreateProcess failed");
+			}
+			m_hGameProcess[i] = pi.hProcess;
+			// 写入PID
+			TCHAR szPID[32] = { 0 };
+			_itow_s(pi.dwProcessId, szPID, 10);
+
+			if (i == 0)
+			{
+				WriteProfileString(TEXT("MapleReborn"), TEXT("Client1PID"), szPID);
+			}
+			else if (i == 2)
+			{
+				WriteProfileString(TEXT("MapleReborn"), TEXT("Client2PID"), szPID);
+			}
+
+			if (pi.hThread)
+			{
+				CloseHandle(pi.hThread);
+			}
+			res.status = 200;
+			res.set_content("OK", "text/plain");
+			break;
+		}
+	});
+
+	// 中止请求
+	svr.Get("/Stop", [&svr,this](const httplib::Request& req, httplib::Response& res) {
+		for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
+		{
+			if (m_hGameProcess[i])
+			{
+				TerminateProcess(m_hGameProcess[i], 0);
+				CloseHandle(m_hGameProcess[i]);
+				m_hGameProcess[i] = nullptr;
+			}
+		}
+		res.status = 200;
+		res.set_content("OK", "text/plain");
+		svr.stop();
+	});
+
+	svr.listen("localhost", 12345);
+
+
+	std::cout << "线程会完吗" << std::endl;
+}
+
+void WorkThread::Stop()
+{
+	// 通知svr 结束了
+	httplib::Client cli("localhost",12345);
+	cli.Get("/Stop");
+	m_bRun = FALSE;
 }

@@ -13,3 +13,7 @@
 #include <malloc.h>
 #include <memory.h>
 #include <tchar.h>
+
+#define WM_TRAYICON (WM_USER + 1)
+#define WM_MINIMIZE_TO_TRAY (WM_USER + 2)
+#define WM_DELETE_TRAY (WM_USER + 3)

@@ -9,6 +9,7 @@
 		"jsoncpp",
 		"sqlitecpp",
 		"zstd",
-		"openssl"
+		"openssl",
+		"libarchive"
 	]
 }

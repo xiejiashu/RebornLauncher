@@ -11,6 +11,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin) # exe
 
 # 1 static MFC library, 2 shared MFC library
 # set(CMAKE_MFC_FLAG 1)
+# minizip
+# unofficial-minizip CONFIG REQUIRED
 
 find_package(cryptopp CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
@@ -18,6 +20,10 @@ find_package(jsoncpp CONFIG REQUIRED)
 find_package(OpenSSL CONFIG REQUIRED)
 find_package(SQLiteCpp REQUIRED)
 find_package(zstd CONFIG REQUIRED)
+
+find_package(LibArchive REQUIRED)
+
+
 message(STATUS "Linking zstd target: ${ZSTD_LIBRARIES}")
 
 add_subdirectory(RebornLauncher)

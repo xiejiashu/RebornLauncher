@@ -13,6 +13,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin) # exe
 # set(CMAKE_MFC_FLAG 1)
 # minizip
 # unofficial-minizip CONFIG REQUIRED
+# 支持Win7以下
+# 让所有库支持win7以下编译
 
 find_package(cryptopp CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)

@@ -128,7 +128,9 @@ DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 				HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
 				if (hProcess) {
 					TCHAR processPath[MAX_PATH];
-					if (GetModuleFileNameEx(hProcess, NULL, processPath, MAX_PATH)) {
+					DWORD dwSize = MAX_PATH;
+					if (QueryFullProcessImageName(hProcess, 0, processPath, &dwSize))
+					{
 						std::wstring strProcessPath = processPath;
 						if (strProcessPath.find(L"MapleReborn.exe") != std::string::npos){
 							TerminateProcess(hProcess, 0);
@@ -158,8 +160,8 @@ DWORD WorkThread::Run()
 
 	if (!GetDownloadUrl())
 	{
-		Stop();
 		MessageBox(m_hMainWnd, L"获取下载地址失败", L"错误", MB_OK);
+		Stop();
 		return 0;
 	}
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
@@ -649,17 +651,22 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	std::cout << __FILE__ << ":" << __LINE__ << "url:" << m_strUrl <<" " << "page:" << strUrl << std::endl;
 	SetCurrentDownloadFile(str2wstr(file_path, file_path.length()));
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// 请求文件总大小
-	auto res = m_client->Head(strUrl.c_str());
-	if (res.value().status == 200)
-	{
-		m_nCurrentDownloadSize = std::stoull(res.value().get_header_value("Content-Length"));
-	}
-	else {
-		std::cout << "Failed to get file size with status code: " << res.value().status << std::endl;
-		return false;
 
+	// 请求文件总大小 用下载部分来代替HEAR请求
+	httplib::Result res;
+	{
+		httplib::Headers headers;
+		headers.insert({ "Range", "bytes=0-0" });
+		res = m_client->Get(strUrl.c_str(), headers);
+		if (res && (res->status == 200 || res->status == 206 )) {
+			m_nCurrentDownloadSize = std::stoull(res.value().get_header_value("Content-Length"));
+		}
+		else {
+			std::cout << "Failed to get file size with status code: " << res->status << std::endl;
+			return false;
+		}
 	}
+
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	// 检查文件是否已经部分下载
 	std::ifstream existing_file(file_path, std::ios::binary | std::ios::ate);
@@ -914,6 +921,7 @@ void WorkThread::Stop()
 
 bool WorkThread::GetDownloadUrl()
 {
+	std::cout << __FILE__<<":"<<__LINE__ << std::endl;
 	auto ExtractUrlParts = [](const std::string& url, std::string& baseUrl, std::string& page) {
 		std::regex urlRegex(R"((https?://[^/]+)(/.*))");
 		std::smatch match;
@@ -924,7 +932,7 @@ bool WorkThread::GetDownloadUrl()
 			}
 		}
 	};
-
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	// 下载更新文件的地址 
 	httplib::Client cli{ "https://gitee.com" };
 	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
@@ -941,6 +949,15 @@ bool WorkThread::GetDownloadUrl()
 		m_strPage.push_back('/');
 		return true;
 	}
+	else {
+		if (res) {
+			std::cout << "获取下载地址失败 状态码:" << res->status << std::endl;
+		}
+		else {
+			std::cout << "获取下载地址失败 未知的HTTP错误:"<< res.error() << std::endl;
+		}
+	}
+	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	return false;
 }
 

@@ -100,6 +100,7 @@ void InitGDIPlus(ULONG_PTR& gdiplusToken) {
 
 // 加载 PNG 图像
 HBITMAP LoadImageWithAlpha(LPCSTR filePath) {
+
     Bitmap* bitmap = new Bitmap((TCHAR*)filePath);
     HBITMAP hBitmap;
     bitmap->GetHBITMAP(Color(0, 0, 0, 0), &hBitmap);
@@ -460,7 +461,8 @@ bool IsProcessRunning(const TCHAR* exePath) {
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
         if (hProcess) {
             TCHAR processPath[MAX_PATH];
-            if (GetModuleFileNameEx(hProcess, NULL, processPath, MAX_PATH)) {
+            DWORD dwSize = MAX_PATH;
+            if (QueryFullProcessImageName(hProcess, NULL, processPath, &dwSize)) {
                 if (_tcsicmp(processPath, exePath) == 0) {
                     CloseHandle(hProcess);
                     CloseHandle(hSnapshot);
@@ -837,6 +839,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         // }
     }
 
+    std::cout << "请求中止" << std::endl;
     workThread.Stop();
 	// 把配置项的进程ID清空
 	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));

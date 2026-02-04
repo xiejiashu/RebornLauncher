@@ -1,20 +1,22 @@
 #include "VersionConfig.h"
+#include "P2PClient.h"
+#include <condition_variable>
 #include <map>
-#include <vector>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <memory>
+#include <vector>
 
 namespace httplib
 {
 	class Client;
 }
 
-// Êı¾İ¿é½á¹¹£¬ÓÃÓÚ´«µİ½âÑ¹Êı¾İµ½¹¤×÷Ïß³Ì
+// éç‰ˆåµé§æ¥ƒç²¨é‹å‹¶ç´é¢ã„¤ç°¬æµ¼çŠ»â‚¬æ•Ğ’é˜å¬«æšŸé¹î†¼åŸŒå®¸ãƒ¤ç¶”ç»¾è·¨â–¼
 struct DataBlock {
 	std::string filePath;
-	long long fileOffset;  // ÎÄ¼şÔÚ¹éµµÖĞµÄÎ»ÖÃ
-	struct archive_entry* entry;  // ¹éµµÎÄ¼şĞÅÏ¢
+	long long fileOffset;  // é‚å›¦æ¬¢é¦ã„¥ç¶Šå¦—ï½„è…‘é¨å‹ªç¶…ç¼ƒ?
+	struct archive_entry* entry;  // è¤°æ“ã€‚é‚å›¦æ¬¢æ·‡â„ƒä¼…
 };
 
 class WorkThread
@@ -27,26 +29,26 @@ public:
 public:
 	DWORD Run();
 	void HandleError(const char* msg);
-	// ½âÃÜ
+	// ç‘™ï½…ç˜‘
 	std::string DecryptUrl(const std::string& ciphertext);
-	// ½âÃÜ Version.datÎÄ¼ş
+	// ç‘™ï½…ç˜‘ Version.daté‚å›¦æ¬¢
 	std::string DecryptVersionDat(const std::string& ciphertext);
-	// ÏÂÔØRunTimeÎÄ¼ş
+	// æ¶“å¬­æµ‡RunTimeé‚å›¦æ¬¢
 	void DownloadRunTimeFile();
 
-	// »ñÈ¡×ÜÏÂÔØ
+	// é‘¾å³°å½‡é¬è®³ç¬…æ?
 	int GetTotalDownload() const;
-	// »ñÈ¡µ±Ç°ÏÂÔØ
+	// é‘¾å³°å½‡è¤°æ’³å¢ æ¶“å¬­æµ‡
 	int GetCurrentDownload() const;
-	// µ±Ç°ÎÄ¼ş
+	// è¤°æ’³å¢ é‚å›¦æ¬¢
 	std::wstring GetCurrentDownloadFile();
-	// ÉèÖÃ
+	// ç’å‰§ç–†
 	void SetCurrentDownloadFile(const std::wstring& strFile);
 
 	int GetCurrentDownloadSize() const;
 	int GetCurrentDownloadProgress() const;
 	
-	// ÏÂÔØ»ù´¡°ü
+	// æ¶“å¬­æµ‡é©è™¹î”…é–?
 	void DownloadBasePackage();
 
 	void Extract7z(const std::string& filename, const std::string& destPath);
@@ -57,50 +59,53 @@ public:
 
 	bool DownloadWithResume(const std::string& url, const std::string& file_path);
 
-	// °ÑÊı¾İĞ´ÈëÓ³ÉäÄÚ´æ
-	void WriteDataToMapping();
+	// é¶å©ƒæšŸé¹î†¼å•“éãƒ¦æ§§çå‹«å”´ç€›?	void WriteDataToMapping();
 
-	// ÍøÂçÇëÇóÏß³Ì
+	// ç¼ƒæˆ ç²¶ç’‡é”‹çœ°ç»¾è·¨â–¼
 	void WebServiceThread();
 
 	void Stop();
 
-	// »ñÈ¡URLµØÖ·
+	// é‘¾å³°å½‡URLé¦æ¿æ½ƒ
 	bool GetDownloadUrl();
 
-	// »ñÈ¡Ô¶³Ì°æ±¾ÎÄ¼şĞÅÏ¢
+	// é‘¾å³°å½‡æ©æ»…â–¼é—å Ÿæ¹°é‚å›¦æ¬¢æ·‡â„ƒä¼…
 	bool GetRemoteVersionFile();
+
+	// é‡å­˜æŸŠ P2P ç’å‰§ç–†é”›å ¢åšç»‹å¬ªç•¨éîŸ’ç´š
+	void UpdateP2PSettings(const P2PSettings& settings);
+	P2PSettings GetP2PSettings() const;
 private:
 
 	BOOL m_bRun{ TRUE };
 
-	// ½ø³ÌÃû
+	// æ©æ¶šâ–¼éš?
 	LPCTSTR m_szProcessName = TEXT("MapleReborn.exe");
 
-	// µ±Ç°°æ±¾ºÅ
+	// è¤°æ’³å¢ é—å Ÿæ¹°é™?
 	int64_t m_qwVersion{ 0 };
 	std::map<std::string, VersionConfig> m_mapFiles;
 	HANDLE m_hThread{ nullptr };
-	// ±ØÏÂÁĞ±í
+	// è¹‡å‘¬ç¬…é’æ¥„ã€ƒ
 	std::vector<std::string> m_vecRunTimeList;
 
-	// ·şÎñÆ÷HOST
+	// éˆå¶…å§Ÿé£â„‰OST
 	std::string m_strUrl;
 	std::string m_strPage;
 
-	// ×Ü¹²ĞèÒªÏÂÔØµÄÎÄ¼şÊıÁ¿
+	// é¬è¯²å¡é—‡â‚¬ç‘•ä½·ç¬…æç•Œæ®‘é‚å›¦æ¬¢éä¼´å™º
 	int m_nTotalDownload{ 0 };
-	// µ±Ç°ÏÂÔØµÄÎÄ¼şÊıÁ¿
+	// è¤°æ’³å¢ æ¶“å¬­æµ‡é¨å‹¬æƒæµ èˆµæšŸé–²?
 	int m_nCurrentDownload{ 0 };
-	// µ±Ç°ÏÂÔØµÄÎÄ¼şÃû
+	// è¤°æ’³å¢ æ¶“å¬­æµ‡é¨å‹¬æƒæµ è·ºæ‚•
 	std::wstring m_strCurrentDownload;
-	// µ±Ç°ÏÂÔØµÄÎÄ¼ş´óĞ¡
+	// è¤°æ’³å¢ æ¶“å¬­æµ‡é¨å‹¬æƒæµ è·ºã‡ç?
 	int m_nCurrentDownloadSize{ 0 };
-	// µ±Ç°ÏÂÔØµÄÎÄ¼ş½ø¶È
+	// è¤°æ’³å¢ æ¶“å¬­æµ‡é¨å‹¬æƒæµ æƒ°ç¹˜æ´?
 	int m_nCurrentDownloadProgress{ 0 };
 
-	// Ä¿±ê½ø³Ì
-	HANDLE m_hGameProcess[2]; // Ë«¿ª
+	// é©î†½çˆ£æ©æ¶šâ–¼
+	HANDLE m_hGameProcess[2]; // é™å±½ç´‘
 
 	// 
 	DWORD m_dwGameProcessId[2];
@@ -109,16 +114,16 @@ private:
 
 	bool m_bUpdateSelf{ false };
 
-	// ±¾½ø³ÌÄ£¿éÈ«Â·¾¶Ãû
+	// éˆî„ƒç¹˜ç»‹å¬«Äé§æ¥€åç’ºîˆšç·éš?
 	std::wstring m_strModulePath;
-	// ±¾½ø³ÌÎÄ¼şÃû
+	// éˆî„ƒç¹˜ç»‹å¬«æƒæµ è·ºæ‚•
 	std::wstring m_strModuleName;
-	// ±¾½ø³ÌÄ¿Â¼
+	// éˆî„ƒç¹˜ç»‹å¬¬æ´°è¤°?
 	std::wstring m_strModuleDir;
 
-	// stl¿âµÄËø tmux
+	// stlæ´æ’¶æ®‘é–¿?tmux
 	std::mutex m_mutex;
-	// ½âÑ¹Ëø
+	// ç‘™ï½…å¸‡é–¿?
 	std::mutex m_mutexUnzip;
 
 	std::queue<DataBlock> dataQueue;
@@ -126,12 +131,16 @@ private:
 	std::mutex archiveMutex;
 	std::condition_variable dataCondition;
 
-	// ±¾µØ°æ±¾ÎÄ¼şµÄMD5
+	// éˆî„€æ¹´é—å Ÿæ¹°é‚å›¦æ¬¢é¨å‡ªD5
 	std::string m_strLocalVersionMD5;
-	// µ±Ç°Ä¿Â¼
+	// è¤°æ’³å¢ é©î†¼ç¶
 	std::string m_strCurrentDir;
 
 	httplib::Client* m_client{ nullptr };
 
 	HWND m_hMainWnd{ nullptr };
+
+	std::unique_ptr<P2PClient> m_p2pClient;
+	P2PSettings m_p2pSettings;
+	mutable std::mutex m_p2pMutex;
 };

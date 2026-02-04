@@ -1,4 +1,4 @@
-﻿#include "FileHash.h"
+#include "FileHash.h"
 
 #include <cryptopp/md5.h>
 #include <cryptopp/hex.h>

@@ -2,13 +2,13 @@
 class LauncherMainDlg
 {
 public:
-	// ´´½¨Ò»¸öDLG ²ÎÊıÒ»¸ö¸¸´°¿Ú
+	// é’æ¶˜ç¼“æ¶“â‚¬æ¶“ç‹£LG é™å‚›æšŸæ¶“â‚¬æ¶“î†åŸ—ç»æ¥€å½›
 	void Create(HWND hParentWnd);
-	// ´´½¨Ò»¸ö×´Ì¬Ìõ
+	// é’æ¶˜ç¼“æ¶“â‚¬æ¶“î†å§¸é¬ä½¹æ½¯
 	void CreateStatusBar();
 	void UpdateStatusBar(int TotalProgress, int CurrentProgress, int CurrentFile, int TotalFiles);
 private:
-	// ¶Ô»°¿ò¹ı³Ì
+	// ç€µç¡…ç˜½å¦—å—šç¹ƒç»‹?
 	static LRESULT CALLBACK DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 	static INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 private:
@@ -19,6 +19,6 @@ private:
 	HWND m_hProgressCurrent{ nullptr };
 	DWORD m_CurrentFile{ 0 };
 	DWORD m_TotalFiles{ 0 };
-	// Ä¿±ê½ø³ÌHANDLE
+	// é©î†½çˆ£æ©æ¶šâ–¼HANDLE
 	HANDLE m_hClientProcess{ nullptr };
 };

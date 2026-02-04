@@ -26,7 +26,7 @@ ResourceManager::ResourceManager(HINSTANCE hInstance)
 
 void ResourceManager::LoadAllResource()
 {
-	// ╪стьUI
+	// И█■Г┼╨Ф╣┤UI
 
 }
 
@@ -39,7 +39,7 @@ const Gdiplus::Bitmap* ResourceManager::GetBitmap(int resId)
 	}
 	else
 	{
-        // юа╪сть
+        // И▌ЁФ▌▒Е╖·Ф²·?
 		Gdiplus::Bitmap* pBitmap = LoadPngFromResource(resId, m_hInstance);
 		if (pBitmap)
 		{
@@ -50,49 +50,49 @@ const Gdiplus::Bitmap* ResourceManager::GetBitmap(int resId)
 	return nullptr;
 }
 
-// ╢свйт╢жп╪сть PNG ╣╫ GDI+ ╣д Bitmap
+// Ф╣═Е╨╓Г╔╚Е╘╖Ф└╙Х┘▒И█■Г┼╨Ф╣┤ PNG И█▓?GDI+ И░╗?Bitmap
 Gdiplus::Bitmap* ResourceManager::LoadPngFromResource(UINT resId,HINSTANCE hInstance) {
     Gdiplus::Bitmap* pBitmap = nullptr;
 
-    // 1. ╡Иурвйт╢
+    // 1. И▐▄Ц┐╕Её≤Г▓╖Е▀╛Г╟╝
     HRSRC hResource = FindResource(hInstance, MAKEINTRESOURCE(resId), L"PNG");
     if (!hResource) {
-        return nullptr;  // н╢ур╣╫вйт╢
+        return nullptr;  // И▐┬Н│┘Её≤И█▓Ф▀▄Г╔╚Е╘╖?
     }
 
-    // 2. ╩Ях║вйт╢╢Сп║╡╒╪стьвйт╢
+    // 2. И▒╬ЕЁ╟Е╫┤Г▓╖Е▀╛Г╟╝Ф╬╤я┐Г ╛И╙·Х╥╨Е╖·Ф²·Е─÷Г╔╚Е╘╖?
     DWORD imageSize = SizeofResource(hInstance, hResource);
     HGLOBAL hGlobal = LoadResource(hInstance, hResource);
     if (!hGlobal) {
         return nullptr;
     }
 
-    // 3. кЬ╤╗вйт╢╩Ях║ж╦оР PNG йЩ╬щ╣дж╦уК
+    // 3. И√©Д╫╦Г∙╬Г▓╖Е▀╛Г╟╝И▒╬ЕЁ╟Е╫┤И▌╦Е⌡╖Ф┌° PNG И▐│Г┴┬Е╣│И░╗Е▀╛Е╞ И√╫?
     void* pResourceData = LockResource(hGlobal);
     if (!pResourceData) {
         return nullptr;
     }
 
-    // 4. ╫╚вйт╢йЩ╬щ©╫╠╢╣╫х╚╬ждз╢Ф
+    // 4. Г│▐Е≈ Г╔╚Е╘╖Ф└╜Ф ÷И▌╧Н├╫Е╚╧Г▓░Ф©├Е÷▄И█▐Ц└╔Г°╛И█░Е▒╜Г⌠╗
     HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
     if (hBuffer) {
         void* pBuffer = GlobalLock(hBuffer);
         memcpy_s(pBuffer, imageSize, pResourceData, imageSize);
         GlobalUnlock(hBuffer);
 
-        // 5. ╢╢╫╗ IStream рт╠Ц GDI+ й╧сц
+        // 5. И█▓Ф╤≤Г╪⌠ IStream Ф╣═Ц┐╓Г╘╤ GDI+ Ф╣ёХ╥╗Ф∙╓
         IStream* pStream = nullptr;
         if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) == S_OK) {
-            // 6. й╧сц GDI+ Bitmap ╧╧тЛ╨╞йЩ╢саВжп╪сть PNG
+            // 6. Ф╣ёХ╥╗Ф∙╓ GDI+ Bitmap И▐▀Е▀╞Б┌╛Г┼╡Е ╠И▐│И╒│Г╡═Е╗╢Д╫╥Х┘▒И█■Г┼╨Ф╣┤ PNG
             pBitmap = new Gdiplus::Bitmap(pStream);
             if (pBitmap->GetLastStatus() != Gdiplus::Ok) {
                 delete pBitmap;
                 pBitmap = nullptr;
             }
-            pStream->Release();  // йм╥е IStream
+            pStream->Release();  // И√╡Е╘┐Ф√│ IStream
         }
 
-        // 7. йм╥ех╚╬ждз╢Ф
+        // 7. И√╡Е╘┐Ф√│И█▐Ц└╔Г°╛И█░Е▒╜Г⌠╗
         GlobalFree(hBuffer);
     }
 

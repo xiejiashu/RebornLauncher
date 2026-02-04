@@ -1,118 +1,89 @@
-﻿// RebornLauncher.cpp : 定义应用程序的入口点。
+// RebornLauncher.cpp : 瀹氫箟搴旂敤绋嬪簭鐨勫叆鍙ｇ偣銆?
 //
 
 #include "framework.h"
 #include "RebornLauncher.h"
 
-#include <corecrt_math.h>
-
-#include "LauncherMainDlg.h"
-#include <objidl.h>
-#include <gdiplus.h>
-#include <objbase.h>
-#include <shlobj.h>
-#include <shellapi.h>
+#include <CommCtrl.h>
+#include <ShlObj.h>
 #include <ShlDisp.h>
 #include <Shlwapi.h>
-#include <iostream>
-
 #include <TlHelp32.h>
 #include <Psapi.h>
+#include <objbase.h>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <algorithm>
+#include <vector>
+#include <cmath>
+#include <shellapi.h>
+#include <cwchar>
 
-#include "Frame.h"
-#include "Unit.h"
-#include "Sprite.h"
-#include "SpriteManager.h"
-#include "ResourceManager.h"
 #include "WorkThread.h"
+#include "Encoding.h"
+#include "P2PClient.h"
 #include <httplib.h>
 
-
-#pragma comment (lib,"Gdiplus.lib")
+#pragma comment (lib,"Comctl32.lib")
 #pragma comment (lib,"Shlwapi.lib")
 
 #define MAX_LOADSTRING 100
 
-using namespace Gdiplus;
+// 鍏ㄥ眬鍙橀噺:
+HINSTANCE hInst;                                // 褰撳墠瀹炰緥
+WCHAR szTitle[MAX_LOADSTRING];                  // 鏍囬鏍忔枃鏈?
+WCHAR szWindowClass[MAX_LOADSTRING];            // 涓荤獥鍙ｇ被鍚?
 
-// 全局变量:
-HINSTANCE hInst;                                // 当前实例
-WCHAR szTitle[MAX_LOADSTRING];                  // 标题栏文本
-WCHAR szWindowClass[MAX_LOADSTRING];            // 主窗口类名
-
-// 此代码模块中包含的函数的前向声明:
+// 姝や唬鐮佹ā鍧椾腑鍖呭惈鐨勫嚱鏁扮殑鍓嶅悜澹版槑:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 void InitTrayIcon(HWND hWnd);
 
-// GDI+ 全局变量
-ULONG_PTR g_gdiplusToken = 0;
-HBITMAP g_hBitmap = NULL;
 HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
-NOTIFYICONDATA nid;
+NOTIFYICONDATA nid{};
 
-// 窗口当前位置
-POINT g_ptWindow = { 831, 455 };
-// 窗口大小
-constexpr SIZE g_szWindow = { 1024, 500 };
+// 绐楀彛褰撳墠浣嶇疆
+POINT g_ptWindow = { 360, 180 };
+// 绐楀彛澶у皬
+constexpr SIZE g_szWindow = { 860, 520 };
 
-// 进度条进度
-float g_fProgressTotal = 0.0;
-// 当前进度条
-float g_fProgressCurrent = 0.0;
-// 当前文件总大小
-int g_nCurrentFileSize = 0;
-// 当前文件已下载大小
-int g_nCurrentFileDownloaded = 0;
-// 当前文件名
-std::wstring g_strCurrentFile;
-
-std::shared_ptr<Sprite> g_pigSprite = nullptr;
-
-// 当前文件模块路径包含文件名
+// 褰撳墠鏂囦欢妯″潡璺緞鍖呭惈鏂囦欢鍚?
 std::wstring g_strCurrentModulePath;
-// 当前exe的名字
+// 褰撳墠exe鐨勫悕瀛?
 std::wstring g_strCurrentExeName;
-// 当前路径，不包含文件名
+// 褰撳墠璺緞锛屼笉鍖呭惈鏂囦欢鍚?
 std::wstring g_strWorkPath;
 
-// 进度条开始位置
-constexpr POINT g_ptProgress = { 0, 20 };
-
-//猪的纹理 系列帧
-// Gdiplus::Bitmap *g_hPigBitmap[7] = { NULL };
-Gdiplus::Bitmap* g_hBkBitmap = nullptr;
-
-SpriteManager* g_pSpriteMgr = nullptr;
-ResourceManager* g_pResMgr = nullptr;
-
-// 渲染开关
+// 娓叉煋寮€鍏筹紙鎵樼洏鍙鏍囪锛?
 bool g_bRendering = true;
 
-// 初始化 GDI+
-void InitGDIPlus(ULONG_PTR& gdiplusToken) {
-    GdiplusStartupInput gdiplusStartupInput;
-    GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
-}
+struct UiHandles {
+	HWND checkP2P{ nullptr };
+	HWND stunList{ nullptr };
+	HWND stunEdit{ nullptr };
+	HWND addStunBtn{ nullptr };
+	HWND statusText{ nullptr };
+	HWND fileLabel{ nullptr };
+	HWND totalLabel{ nullptr };
+	HWND totalProgress{ nullptr };
+	HWND fileProgress{ nullptr };
+} g_ui;
 
-// 加载 PNG 图像
-HBITMAP LoadImageWithAlpha(LPCSTR filePath) {
+std::vector<std::wstring> g_stunServers;
+P2PSettings g_p2pSettings;
+WorkThread* g_workThreadPtr = nullptr;
+constexpr const wchar_t* kStunListFile = L"p2p_stun_servers.txt";
 
-    Bitmap* bitmap = new Bitmap((TCHAR*)filePath);
-    HBITMAP hBitmap;
-    bitmap->GetHBITMAP(Color(0, 0, 0, 0), &hBitmap);
-    delete bitmap;
-    return hBitmap;
-}
-
-// 删除托盘图标
+// 鍒犻櫎鎵樼洏鍥炬爣
 void DeleteTrayIcon() {
 	Shell_NotifyIcon(NIM_DELETE, &nid);
 	DestroyIcon(nid.hIcon);
-	// 删除托盘图标
+	// 鍒犻櫎鎵樼洏鍥炬爣
     g_bRendering = true;
 }
 
@@ -128,307 +99,214 @@ void RestoreFromTray(HWND hWnd) {
     DeleteTrayIcon();
 	SetForegroundWindow(hWnd);
     g_bRendering = true;
-	// 解除窗口透明
+	// 瑙ｉ櫎绐楀彛閫忔槑
 	// SetLayeredWindowAttributes(hWnd, RGB(0, 0, 0), 255, LWA_ALPHA);
 }
 
-// 从导入资源加载图像，而不是文件
-HBITMAP LoadImageFromResource(UINT resId) {
-    HBITMAP hBitmap = NULL;
-    // 找到 PNG 资源
-    HRSRC hResource = FindResource(g_hInstance, MAKEINTRESOURCE(resId), L"PNG");
-    if (hResource) {
-        DWORD imageSize = SizeofResource(g_hInstance, hResource);  // 获取资源大小
-        HGLOBAL hGlobal = LoadResource(g_hInstance, hResource);    // 加载资源
-        if (hGlobal) {
-            void* pResourceData = LockResource(hGlobal);         // 锁定资源
-            if (pResourceData) {
-                // 创建 IStream 以便于 GDI+ 使用
-                HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
-                if (hBuffer) {
-                    void* pBuffer = GlobalLock(hBuffer);
-                    memcpy_s(pBuffer, imageSize, pResourceData, imageSize);
-                    GlobalUnlock(hBuffer);
+constexpr UINT ID_CHECK_P2P = 5001;
+constexpr UINT ID_STUN_LIST = 5002;
+constexpr UINT ID_STUN_EDIT = 5003;
+constexpr UINT ID_STUN_ADD = 5004;
 
-                    IStream* pStream = NULL;
-                    if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) == S_OK) {
-                        Gdiplus::Image* image = new Gdiplus::Image(pStream);
-                        if (image && image->GetLastStatus() == Gdiplus::Ok) {
-                            Gdiplus::Bitmap* bitmap = static_cast<Gdiplus::Bitmap*>(image);
-                            bitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap);  // 获取 HBITMAP
-                            delete image;
-                        }
-                        pStream->Release();
-                    }
-                    GlobalFree(hBuffer);
-                }
-            }
-        }
-    }
-    return hBitmap;
+std::wstring Trim(const std::wstring& value) {
+	constexpr wchar_t whitespace[] = L" \t\r\n";
+	const auto start = value.find_first_not_of(whitespace);
+	if (start == std::wstring::npos) {
+		return L"";
+	}
+	const auto end = value.find_last_not_of(whitespace);
+	return value.substr(start, end - start + 1);
 }
 
-
-
-void OnDraw(HDC hdc,const RECT &rect) 
-{
-    // 先绘制背景 绘制到屏幕最中间
-    Graphics graphics(hdc);
-    int nWidth = g_hBkBitmap->GetWidth();
-    int nHeight = g_hBkBitmap->GetHeight();
-	// graphics.DrawImage(g_hBkBitmap, (INT)(rect.right - nWidth) / 2, (INT)(rect.bottom - nHeight) / 2);
-        // 透明度参数
-    static int alpha = 0;
-    static int colorChange = 0;
-    static int alphaDirection = 5;  // 控制透明度的增减方向
-    const int maxAlpha = 255;  // 透明度最大值
-    const int minAlpha = 150;   // 透明度最小值
-    static int colorDirection = 5;  // 控制颜色变化的增减方向
-
-    // 进度条的参数
-    // static float progress = 0.0f;    // 当前进度条的进度（从0%到100%）
-    const float progressSpeed = 0.00005f;  // 控制进度条前进的速度
-
-    // 更新进度条进度
-    // progress += progressSpeed;
-    // if (progress > 1.0f) progress = 1.0f;  // 进度最大为100%
-
-    // 每1秒一次透明度变化
-    static DWORD lastAlphaTime = 0;
-    DWORD currentTime = GetTickCount64() % UINT_MAX;
-    if (currentTime - lastAlphaTime > 100) {
-        lastAlphaTime = currentTime;
-        if (alpha > maxAlpha)
-        {
-            alphaDirection = -5;
-        }
-        if (alpha < minAlpha)
-        {
-            alphaDirection = 5;
-        }
-        alpha += alphaDirection;
-
-        if (alpha > 255)
-        {
-            alpha = 255;
-        }
-
-        // 更新颜色变化
-        if (colorChange > 255) {
-            colorDirection = -5;
-        }
-        if (colorChange < 0) {
-            colorDirection = 5;
-        }
-        colorChange += colorDirection;
-    }
-
-    // 左边已经停止呼吸的区域
-    // int progressBarWidth = (int)(rect.right * progress);  // 计算已经不呼吸的区域的宽度
-    int progressBarWidth = (int)(rect.right * g_fProgressTotal);  // 计算已经不呼吸的区域的宽度
-    GraphicsPath path;
-    path.AddRectangle(Rect(0, 0, progressBarWidth, rect.bottom)); // 左侧不呼吸区域
-    Region nonBreathingRegion(&path);  // 非呼吸区域
-	int curProgressBarWidth = (int)(rect.right * g_fProgressCurrent);  // 计算已经不呼吸的区域的宽度
-    
-    // 半透明和颜色渐变的渲染
-    ColorMatrix colorMatrixBreathing = {
-        1, 0, 0, 0, 0,
-        0, 1, 0, 0, 0,
-        0, 0, 1, 0, 0,
-        0, 0, 0, alpha / 255.0f, 0,
-        0, 0, 0, 0, 1
-    };
-
-    ColorMatrix colorMatrixNonBreathing = {
-        1, 0, 0, 0, 0,
-        0, 1, 0, 0, 0,
-        0, 0, 1, 0, 0,
-        0, 0, 0, maxAlpha / 255.0f, 0, // 完全不透明
-        0, 0, 0, 0, 1
-    };
-    
-    // 为RGB颜色增加渐变效果
-    colorMatrixBreathing.m[0][0] = (255 - colorChange) / 255.0f; // Red
-    colorMatrixBreathing.m[1][1] = (colorChange) / 255.0f;       // Green
-    colorMatrixBreathing.m[2][2] = (128 + colorChange) / 255.0f; // Blue
-    
-    // 设置呼吸和非呼吸的颜色矩阵
-    ImageAttributes imageAttributesBreathing;
-    imageAttributesBreathing.SetColorMatrix(&colorMatrixBreathing, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
-
-
-    ImageAttributes imageAttributesNonBreathing;
-    imageAttributesNonBreathing.SetColorMatrix(&colorMatrixNonBreathing, ColorMatrixFlagsDefault, ColorAdjustTypeBitmap);
-
-    // 绘制已经停止呼吸的区域
-    graphics.SetClip(&nonBreathingRegion, CombineModeReplace); // 限制绘制区域
-    graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributesNonBreathing);
-    
-    // 绘制仍然在呼吸的区域
-    Region breathingRegion(Rect(progressBarWidth, 0, rect.right - progressBarWidth, rect.bottom)); // 剩下的呼吸区域
-    graphics.SetClip(&breathingRegion, CombineModeReplace); // 切换到呼吸区域
-    graphics.DrawImage(g_hBkBitmap, Rect(0, 0, nWidth, nHeight), 0, 0, nWidth, nHeight, UnitPixel, &imageAttributesBreathing);
-    // 清除剪辑
-    graphics.ResetClip();
-
-    /*
-	// 用GDI + 绘制猪的帧率 大概是0.1s一帧 
-    static int frame = 0;    // 当前帧编号
-    static DWORD lastTime = 0; // 记录上次帧绘制的时间
-
-    // 如果时间间隔达到了0.1秒 (100ms)，就切换到下一帧
-    if (currentTime - lastTime > 100) {
-        frame++;
-        frame %= 7; // 总共7帧，循环播放
-        lastTime = currentTime;
-    }
-
-    // 猪的旋转相关
-    static float angle = 0.0f;   // 当前的旋转角度
-    const float radius = 100.0f; // 旋转半径，设定为100
-    const float centerX = (rect.right - nWidth) / 2.0f;  // 中心点 X
-    const float centerY = (rect.bottom - nHeight) / 2.0f; // 中心点 Y
-
-    // 每帧增加角度
-    const float rotationSpeed = 0.01f;  // 调整这个值控制旋转速度，数值越小速度越慢
-    angle += rotationSpeed;  
-    if (angle >= 360.0f) angle -= 360.0f;
-
-    // 计算猪的当前位置 (x, y)
-    float pigX = centerX + radius * cosf(angle * 3.14159265f / 180.0f);
-    float pigY = centerY + radius * sinf(angle * 3.14159265f / 180.0f) - 100;
-
-    if (g_hPigBitmap[frame]) {
-        // 将当前帧绘制到窗口
-        graphics.DrawImage(g_hPigBitmap[frame], pigX,pigY);  // 你可以指定 x, y 坐标
-    }*/
-
-    // 绘制深蓝色进度条
-    LinearGradientBrush brush(Rect(0, 0, curProgressBarWidth, rect.bottom), Color(255, 0, 0, 255), Color(255, 0, 0, 128), LinearGradientModeHorizontal);
-    graphics.FillRectangle(&brush, 0, rect.bottom - g_ptProgress.y, curProgressBarWidth, rect.bottom);
-    // 绘制光晕效果
-    Pen pen(Color(128, 0, 0, 255), 10);
-    pen.SetLineJoin(LineJoinRound);
-    graphics.DrawRectangle(&pen, 0, rect.bottom - g_ptProgress.y, curProgressBarWidth, rect.bottom);
-
-    // 绘制透明区域
-    SolidBrush transparentBrush(Color(128, 255, 255, 0));
-    graphics.FillRectangle(&transparentBrush, curProgressBarWidth, rect.bottom - g_ptProgress.y, rect.right - curProgressBarWidth, rect.bottom);
-
-    // 在进度条上渲染当下载文件的名字 当前量/总量
-	FontFamily fontFamily(L"Arial");
-	Font font(&fontFamily, 16, FontStyleRegular, UnitPixel);
-	SolidBrush solidBrush(Color(255, 128, 255, 255));
-	std::wstring str = g_strCurrentFile + TEXT(" ") + std::to_wstring(g_nCurrentFileDownloaded) + TEXT("/") + std::to_wstring(g_nCurrentFileSize);
-    // 渲染到进度条中间
-	graphics.DrawString(str.c_str(), str.length(), &font, PointF((rect.right - str.length() * 16) / 2, rect.bottom - g_ptProgress.y - 30), &solidBrush);
-    // graphics.DrawString(str.c_str(), str.length(), &font, PointF(0, rect.bottom - g_ptProgress.y - 30), &solidBrush);
-
-    // 设置猪的位置
-	g_pigSprite->SetX(g_ptProgress.x + g_fProgressCurrent * rect.right);
-	g_pigSprite->SetY(rect.bottom - g_ptProgress.y - 30);
-    
-	// 绘制猪
-	g_pSpriteMgr->Draw(graphics);
-
-    // auto brush1 = SolidBrush(Color(255, 0, 0, 0));
-    // auto brush2 = SolidBrush(Color(255, 255, 0, 0));
-    // graphics.FillRectangle(&brush1, 0, 0, progressBarWidth, rect.bottom);
-    // graphics.FillRectangle(&brush2, progressBarWidth, 0, rect.right - progressBarWidth, rect.bottom);
+std::filesystem::path GetStunConfigPath() {
+	if (!g_strWorkPath.empty()) {
+		return std::filesystem::path(g_strWorkPath) / kStunListFile;
+	}
+	wchar_t modulePath[MAX_PATH]{};
+	GetModuleFileName(nullptr, modulePath, MAX_PATH);
+	return std::filesystem::path(modulePath).parent_path() / kStunListFile;
 }
 
-void UpdateLoadingAnimation(HWND hWnd)
-{
-    if (g_bRendering == false)
-        return;
-	//HDC hdc = GetDC(hWnd);
-	//HDC hdcMem = CreateCompatibleDC(hdc);
-	//RECT rect;
-	//GetClientRect(hWnd, &rect);
-	//HBITMAP hBitmap = CreateCompatibleBitmap(hdc, rect.right, rect.bottom);
-	//SelectObject(hdcMem, hBitmap);
-	//// 绘制
-	//OnDraw(hdcMem);
-	//BitBlt(hdc, 0, 0, rect.right, rect.bottom, hdcMem, 0, 0, SRCCOPY);
-	//// 释放资源
-	//DeleteObject(hBitmap);
-	//DeleteDC(hdcMem);
-	//ReleaseDC(hWnd, hdc);
-
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-
-	// RECT rect = { 0,0,1000,300 };
-    //GetClientRect(hWnd, &rect);
-    // 获取当前窗口在桌面的位置
-	//RECT windowRect;
- //   GetWindowRect(GetDesktopWindow(), &windowRect);
-    RECT rect = { 0, 0, g_szWindow.cx, g_szWindow.cy };
-
-    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, rect.right, rect.bottom);
-    SelectObject(hdcMem, hBitmap);
-
-    // 使用 GDI+ 绘制猪的动画帧
-    OnDraw(hdcMem,rect);
-
-    // 获取图像尺寸
-    BITMAP bitmap;
-    GetObject(hBitmap, sizeof(BITMAP), &bitmap);
-    SIZE size = { bitmap.bmWidth, bitmap.bmHeight };
-
-    // 定义混合函数
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-
-    // 中心化窗口位置
-    POINT ptPos = { (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2,
-                    (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2 };
-    POINT ptSrc = { 0, 0 };
-
-    // 使用 UpdateLayeredWindow 来更新整个窗口
-    UpdateLayeredWindow(hWnd, hdcScreen, &g_ptWindow, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
-
-    // 释放资源
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
+void RefreshStunListUI() {
+	if (!g_ui.stunList) {
+		return;
+	}
+	SendMessage(g_ui.stunList, LB_RESETCONTENT, 0, 0);
+	for (const auto& server : g_stunServers) {
+		SendMessage(g_ui.stunList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(server.c_str()));
+	}
 }
 
-// 设置窗口为带透明度的分层窗口
-void SetLayeredWindow(HWND hwnd, HBITMAP hBitmap) {
-    HDC hdcScreen = GetDC(NULL); // 获取屏幕的设备上下文
-    HDC hdcMem = CreateCompatibleDC(hdcScreen); // 创建内存设备上下文
-    SelectObject(hdcMem, hBitmap); // 选择图像到内存设备上下文
-
-    // 获取图像尺寸
-    BITMAP bitmap;
-    GetObject(hBitmap, sizeof(BITMAP), &bitmap);
-    SIZE size = { bitmap.bmWidth, bitmap.bmHeight };
-
-    // 定义混合函数
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 0, AC_SRC_ALPHA };
-
-    // 更新分层窗口
-    POINT ptSrc = { 0, 0 };
-    // POINT ptPos = { 100, 100 }; // 窗口显示的位置
-    // 窗口移到最中间
-	RECT rect;
-	GetWindowRect(hwnd, &rect);
-	//g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - rect.right) / 2;
-	//g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - rect.bottom) / 2;
-    UpdateLayeredWindow(hwnd, hdcScreen, &g_ptWindow, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
-
-    // 释放资源
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
+void SaveStunServers() {
+	const auto path = GetStunConfigPath();
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out.is_open()) {
+		return;
+	}
+	for (const auto& server : g_stunServers) {
+		out << wstr2str(server) << "\n";
+	}
 }
 
-// 创建图标
+void LoadStunServers() {
+	g_stunServers.clear();
+	const auto path = GetStunConfigPath();
+	if (std::filesystem::exists(path)) {
+		std::ifstream in(path, std::ios::binary);
+		std::string line;
+		while (std::getline(in, line)) {
+			auto ws = Trim(str2wstr(line, static_cast<int>(line.size())));
+			if (!ws.empty()) {
+				g_stunServers.push_back(ws);
+			}
+		}
+	}
+	if (g_stunServers.empty()) {
+		g_stunServers = {
+			L"stun:stun.l.google.com:19302",
+			L"stun:global.stun.twilio.com:3478",
+			L"stun:stun.cloudflare.com:3478"
+		};
+	}
+	RefreshStunListUI();
+}
+
+void ApplyP2PSettings() {
+	g_p2pSettings.enabled = g_ui.checkP2P && SendMessage(g_ui.checkP2P, BM_GETCHECK, 0, 0) == BST_CHECKED;
+	g_p2pSettings.stunServers.clear();
+	for (const auto& ws : g_stunServers) {
+		g_p2pSettings.stunServers.push_back(wstr2str(ws));
+	}
+
+	if (g_ui.statusText) {
+		SetWindowText(g_ui.statusText, g_p2pSettings.enabled ? L"P2P 宸插惎鐢?(WebRTC)" : L"P2P 宸插叧闂?);
+	}
+
+	if (g_workThreadPtr) {
+		g_workThreadPtr->UpdateP2PSettings(g_p2pSettings);
+	}
+}
+
+void AddStunServerFromEdit() {
+	if (!g_ui.stunEdit) {
+		return;
+	}
+	wchar_t buffer[256]{};
+	GetWindowText(g_ui.stunEdit, buffer, static_cast<int>(std::size(buffer)));
+	std::wstring value = Trim(buffer);
+	if (value.empty()) {
+		return;
+	}
+	for (const auto& existing : g_stunServers) {
+		if (_wcsicmp(existing.c_str(), value.c_str()) == 0) {
+			return;
+		}
+	}
+	g_stunServers.push_back(value);
+	RefreshStunListUI();
+	SaveStunServers();
+	ApplyP2PSettings();
+	SetWindowText(g_ui.stunEdit, L"");
+}
+
+void RemoveSelectedStunServer() {
+	if (!g_ui.stunList) {
+		return;
+	}
+	int sel = static_cast<int>(SendMessage(g_ui.stunList, LB_GETCURSEL, 0, 0));
+	if (sel != LB_ERR && sel < static_cast<int>(g_stunServers.size())) {
+		g_stunServers.erase(g_stunServers.begin() + sel);
+		RefreshStunListUI();
+		SaveStunServers();
+		ApplyP2PSettings();
+	}
+}
+
+void CreateMainControls(HWND hWnd) {
+	const int margin = 16;
+	const int columnWidth = 300;
+	int y = margin;
+
+	g_ui.statusText = CreateWindowEx(0, L"STATIC", L"涓嬭浇妯″紡", WS_CHILD | WS_VISIBLE,
+		margin, y, columnWidth, 24, hWnd, nullptr, hInst, nullptr);
+
+	y += 28;
+	g_ui.checkP2P = CreateWindowEx(0, L"BUTTON", L"鍚敤 P2P (WebRTC)", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+		margin, y, columnWidth, 24, hWnd, reinterpret_cast<HMENU>(ID_CHECK_P2P), hInst, nullptr);
+
+	y += 32;
+	CreateWindowEx(0, L"STATIC", L"STUN 鏈嶅姟鍣?, WS_CHILD | WS_VISIBLE,
+		margin, y, columnWidth, 20, hWnd, nullptr, hInst, nullptr);
+
+	y += 20;
+	g_ui.stunList = CreateWindowEx(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+		WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL,
+		margin, y, columnWidth, 140, hWnd, reinterpret_cast<HMENU>(ID_STUN_LIST), hInst, nullptr);
+
+	y += 150;
+	g_ui.stunEdit = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+		margin, y, columnWidth - 110, 24, hWnd, reinterpret_cast<HMENU>(ID_STUN_EDIT), hInst, nullptr);
+
+	g_ui.addStunBtn = CreateWindowEx(0, L"BUTTON", L"娣诲姞 STUN", WS_CHILD | WS_VISIBLE,
+		margin + columnWidth - 100, y, 100, 24, hWnd, reinterpret_cast<HMENU>(ID_STUN_ADD), hInst, nullptr);
+
+	const int rightX = margin + columnWidth + 40;
+	int ry = margin;
+	g_ui.totalLabel = CreateWindowEx(0, L"STATIC", L"鎬昏繘搴?, WS_CHILD | WS_VISIBLE,
+		rightX, ry, 200, 20, hWnd, nullptr, hInst, nullptr);
+	ry += 24;
+	g_ui.totalProgress = CreateWindowEx(0, PROGRESS_CLASS, nullptr,
+		WS_CHILD | WS_VISIBLE, rightX, ry, 420, 22, hWnd, nullptr, hInst, nullptr);
+	SendMessage(g_ui.totalProgress, PBM_SETRANGE32, 0, 100);
+
+	ry += 36;
+	g_ui.fileLabel = CreateWindowEx(0, L"STATIC", L"褰撳墠鏂囦欢: 鏃?, WS_CHILD | WS_VISIBLE,
+		rightX, ry, 420, 20, hWnd, nullptr, hInst, nullptr);
+	ry += 24;
+	g_ui.fileProgress = CreateWindowEx(0, PROGRESS_CLASS, nullptr,
+		WS_CHILD | WS_VISIBLE, rightX, ry, 420, 22, hWnd, nullptr, hInst, nullptr);
+	SendMessage(g_ui.fileProgress, PBM_SETRANGE32, 0, 100);
+}
+
+void UpdateProgressUi(const WorkThread& workThread) {
+	if (!g_ui.totalProgress || !g_ui.fileProgress) {
+		return;
+	}
+
+	const int totalCount = workThread.GetTotalDownload();
+	const int currentCount = workThread.GetCurrentDownload();
+	SendMessage(g_ui.totalProgress, PBM_SETRANGE32, 0, std::max(1, totalCount));
+	SendMessage(g_ui.totalProgress, PBM_SETPOS, currentCount, 0);
+
+	const int fileSize = workThread.GetCurrentDownloadSize();
+	const int fileProgress = workThread.GetCurrentDownloadProgress();
+	SendMessage(g_ui.fileProgress, PBM_SETRANGE32, 0, std::max(1, fileSize));
+	SendMessage(g_ui.fileProgress, PBM_SETPOS, fileProgress, 0);
+
+	std::wstring fileName = workThread.GetCurrentDownloadFile();
+	if (fileName.empty()) {
+		fileName = L"褰撳墠鏂囦欢: 鏃?;
+	}
+	else {
+		fileName = L"褰撳墠鏂囦欢: " + fileName + L" " + std::to_wstring(fileProgress) + L"/" + std::to_wstring(std::max(1, fileSize));
+	}
+	if (g_ui.fileLabel) {
+		SetWindowText(g_ui.fileLabel, fileName.c_str());
+	}
+
+	std::wstring totalText = L"鎬昏繘搴? " + std::to_wstring(currentCount) + L"/" + std::to_wstring(std::max(1, totalCount));
+	if (g_ui.totalLabel) {
+		SetWindowText(g_ui.totalLabel, totalText.c_str());
+	}
+}
+
+// 鍒涘缓鍥炬爣
 void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath,const LPCTSTR lpFileName) {
     IShellLink* pShellLink = NULL;
     HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&pShellLink);
     if (SUCCEEDED(hr)) {
-        // 合出一个新路径
+        // 鍚堝嚭涓€涓柊璺緞
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetPath, lpFileName);
         pShellLink->SetPath(newPath);
@@ -480,33 +358,33 @@ bool IsProcessRunning(const TCHAR* exePath) {
 void MoveToDirectory(LPCTSTR lpTargetDir) {
     // TCHAR currentPath[MAX_PATH];
     // GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
-    // 提取文件名
+    // 鎻愬彇鏂囦欢鍚?
 	// TCHAR* FileName = PathFindFileName(g_strCurrentModulePath.c_str());
     TCHAR newPath[MAX_PATH];
     swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
-    // 清清除文件的只读属性
+    // 娓呮竻闄ゆ枃浠剁殑鍙灞炴€?
 	SetFileAttributes(newPath, FILE_ATTRIBUTE_NORMAL);
     
-	// 先清除旧文件
+	// 鍏堟竻闄ゆ棫鏂囦欢
     if (!DeleteFile(newPath))
     {
-		std::wcout <<__FILEW__<<":"<<__LINE__<<TEXT( "删除失败:") << newPath << TEXT("err:")<<GetLastError()<<std::endl;
+		std::wcout <<__FILEW__<<":"<<__LINE__<<TEXT( "鍒犻櫎澶辫触:") << newPath << TEXT("err:")<<GetLastError()<<std::endl;
     }
     if (!CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE))
     {
-        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath << TEXT("移动失败:") << newPath << TEXT("err:") << GetLastError() << std::endl;
+        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath << TEXT("绉诲姩澶辫触:") << newPath << TEXT("err:") << GetLastError() << std::endl;
     }
 
-    // 设置游戏目录写配置项
+    // 璁剧疆娓告垙鐩綍鍐欓厤缃」
 	WriteProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir);
 }
 
 bool IsInMapleRebornDir() {
-    // 获取当前模块的文件路径
+    // 鑾峰彇褰撳墠妯″潡鐨勬枃浠惰矾寰?
     // TCHAR filePath[MAX_PATH];
     // GetModuleFileName(NULL, filePath, MAX_PATH);
 
-    // 获取文件名
+    // 鑾峰彇鏂囦欢鍚?
     // TCHAR* fileName = PathFindFileName(filePath);
 
     std::cout << "2222222222222222222222222222" << std::endl;
@@ -519,16 +397,16 @@ bool IsInMapleRebornDir() {
         return true;
     }
 
-    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << TEXT("失败") << TEXT(":") << __LINE__ << TEXT(" ") << str << std::endl;
+    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << TEXT("澶辫触") << TEXT(":") << __LINE__ << TEXT(" ") << str << std::endl;
 
-    //// 去掉文件名，保留目录路径
+    //// 鍘绘帀鏂囦欢鍚嶏紝淇濈暀鐩綍璺緞
     //*fileName = '\0';
     //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
-    //// 获取父目录名
+    //// 鑾峰彇鐖剁洰褰曞悕
     //PathRemoveBackslash(filePath);
     //PathRemoveFileSpec(filePath);
     //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
-    //// 检查父目录名是否为 "MapleReborn"
+    //// 妫€鏌ョ埗鐩綍鍚嶆槸鍚︿负 "MapleReborn"
     //TCHAR* folderName = PathFindFileName(filePath);
     //MessageBox(NULL, folderName, TEXT("err"), MB_OK);
     return false;
@@ -554,18 +432,18 @@ bool IsProcessRunning(DWORD dwProcessId) {
 }
 
 void InitTrayIcon(HWND hWnd) {
-    // 设置托盘图标数据
+    // 璁剧疆鎵樼洏鍥炬爣鏁版嵁
     nid.cbSize = sizeof(NOTIFYICONDATA);
     nid.hWnd = hWnd;
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(IDI_REBORNLAUNCHER)); // 使用你的图标资源
+    nid.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(IDI_REBORNLAUNCHER)); // 浣跨敤浣犵殑鍥炬爣璧勬簮
 	if (!nid.hIcon){
         std::cout << "LoadIcon failed errcode:" << GetLastError() << ":"<< g_hInstance << std::endl;
 	}
-    lstrcpy(nid.szTip, L"枫叶重生");
-    // 添加托盘图标
+    lstrcpy(nid.szTip, L"鏋彾閲嶇敓");
+    // 娣诲姞鎵樼洏鍥炬爣
     Shell_NotifyIcon(NIM_ADD, &nid);
 }
 
@@ -591,17 +469,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
 
-	g_strCurrentModulePath.resize(MAX_PATH);
-	GetModuleFileName(hInstance, g_strCurrentModulePath.data(), MAX_PATH);
-	g_strCurrentExeName = PathFindFileName(g_strCurrentModulePath.c_str());
-    g_strWorkPath.resize(MAX_PATH);
-	GetCurrentDirectory(MAX_PATH, (LPTSTR)g_strWorkPath.data());
+	wchar_t modulePath[MAX_PATH]{};
+	GetModuleFileName(hInstance, modulePath, MAX_PATH);
+	g_strCurrentModulePath = modulePath;
+	g_strCurrentExeName = PathFindFileName(modulePath);
+    wchar_t workPath[MAX_PATH]{};
+	GetCurrentDirectory(MAX_PATH, workPath);
+	g_strWorkPath = workPath;
 
 //#ifndef _DEBUG
 //	std::wofstream outLog(g_strCurrentExeName + TEXT(".log"));
-//    // 保存原始的缓冲区指针
+//    // 淇濆瓨鍘熷鐨勭紦鍐插尯鎸囬拡
 //    std::wstreambuf* originalCoutBuffer = std::wcout.rdbuf();
-//    // 将 std::cout 的缓冲区指针重定向到文件
+//    // 灏?std::cout 鐨勭紦鍐插尯鎸囬拡閲嶅畾鍚戝埌鏂囦欢
 //    std::wcout.rdbuf(outLog.rdbuf());
 //
 //	std::ofstream outLogA("Launcher.log");
@@ -612,16 +492,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	DWORD dwPID = GetProfileInt(TEXT("MapleReborn"), TEXT("pid"),0);
     if (dwPID)
     {
-        // 查看进程是否活着
+        // 鏌ョ湅杩涚▼鏄惁娲荤潃
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
         if (IsProcessRunning(dwPID))
         {
-            // 判断进程是否活着的
+            // 鍒ゆ柇杩涚▼鏄惁娲荤潃鐨?
 			//DWORD dwExitCode = 0;
    //         DWORD dwResult = WaitForSingleObject(hProcess, 0);
    //         if (dwResult != WAIT_TIMEOUT)
    //         {
-   //             // 进程还活着
+   //             // 杩涚▼杩樻椿鐫€
    //             CloseHandle(hProcess);
 
 
@@ -630,24 +510,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             auto res = cli.Get("/RunClient");
             if (res && res->status == 200)
             {
-                // 启动成功
+                // 鍚姩鎴愬姛
             }
             else
             {
-				MessageBox(NULL, TEXT("最多只能启动2个客户端"), TEXT("err"), MB_OK);
-                // 启动失败
+				MessageBox(NULL, TEXT("鏈€澶氬彧鑳藉惎鍔?涓鎴风"), TEXT("err"), MB_OK);
+                // 鍚姩澶辫触
             }
             return 0;
         }
     }
 
-    // 把当前PID写入
+    // 鎶婂綋鍓峆ID鍐欏叆
 	DWORD dwCurrentPID = GetCurrentProcessId();
     TCHAR szPID[32] = { 0 };
 	_itow_s(dwCurrentPID, szPID, 10);
 	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), szPID);
 
-    // 结束 MapleReborn 下的 Client1PID,Client2PID
+    // 缁撴潫 MapleReborn 涓嬬殑 Client1PID,Client2PID
 	DWORD dwClient1PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client1PID"), 0);
 	DWORD dwClient2PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client2PID"), 0);
 	if (dwClient1PID)
@@ -676,14 +556,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     freopen_s(&stream, "CONOUT$", "w", stdout); //CONOUT$
 #endif
 
-    // TODO: 在此处放置代码。
-    // 调用GDI+库准备
+    // TODO: 鍦ㄦ澶勬斁缃唬鐮併€?
+    // 璋冪敤GDI+搴撳噯澶?
 
     // MessageBox(NULL, TEXT("0000000000000000"), TEXT("err"), MB_OK);
     std::wcout << TEXT("Start:") << lpCmdLine << std::endl;
 
 
-    // 桌看当前是不是在桌面，或是在C盘目录下 如果是桌面，就把自己移到D盘(没有D盘就E盘，依次…… 如果都没有，就移到C:\MapleReborn 目录下面。
+    // 妗岀湅褰撳墠鏄笉鏄湪妗岄潰锛屾垨鏄湪C鐩樼洰褰曚笅 濡傛灉鏄闈紝灏辨妸鑷繁绉诲埌D鐩?娌℃湁D鐩樺氨E鐩橈紝渚濇鈥︹€?濡傛灉閮芥病鏈夛紝灏辩Щ鍒癈:\MapleReborn 鐩綍涓嬮潰銆?
     HRESULT hr = CoInitialize(NULL);
 	if (FAILED(hr)) {
 		return -1;
@@ -697,7 +577,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn ");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
         for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-            // 创建目录
+            // 鍒涘缓鐩綍
 			CreateDirectory(dirs[i], NULL);
 			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
 				// MoveToDirectory(dirs[i]);
@@ -706,16 +586,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			}
 		}
 
-        // 读取游戏目录
+        // 璇诲彇娓告垙鐩綍
         TCHAR szGamePath[MAX_PATH] = { 0 };
         GetProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
         MoveToDirectory(szGamePath);
 
         // MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
 
-		// 创建桌面快捷方式
+		// 鍒涘缓妗岄潰蹇嵎鏂瑰紡
 		TCHAR shortcutPath[MAX_PATH];
-        // 获取桌面路径
+        // 鑾峰彇妗岄潰璺緞
 		LPITEMIDLIST pidlDesktop;
 		HRESULT hr = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
 		if (FAILED(hr)) {
@@ -724,15 +604,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		}
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
 		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
-        // 获取当前模块的名字
+        // 鑾峰彇褰撳墠妯″潡鐨勫悕瀛?
 		// TCHAR currentPath[MAX_PATH];
 		// GetModuleFileName(hInstance, currentPath, MAX_PATH);
-        // 把名字提取出来拼，把路径去掉
+        // 鎶婂悕瀛楁彁鍙栧嚭鏉ユ嫾锛屾妸璺緞鍘绘帀
 		// TCHAR* fileName = PathFindFileName(g_strCurrentModulePath.c_str());
 		CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
         // MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
 
-        // 查看目标进程是否已启动，已启动就不再创建
+        // 鏌ョ湅鐩爣杩涚▼鏄惁宸插惎鍔紝宸插惎鍔ㄥ氨涓嶅啀鍒涘缓
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
         if (!IsProcessRunning(newPath)) {
@@ -746,17 +626,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         if (lpCmdLine)
         {
-            // 取消文件只读属性
+            // 鍙栨秷鏂囦欢鍙灞炴€?
 			SetFileAttributes(lpCmdLine, FILE_ATTRIBUTE_NORMAL);
             DeleteFile(lpCmdLine);
 
-            // 如果当前文件名不是 RebornLauncher.exe 那复制出一个 RebornLauncher.exe
+            // 濡傛灉褰撳墠鏂囦欢鍚嶄笉鏄?RebornLauncher.exe 閭ｅ鍒跺嚭涓€涓?RebornLauncher.exe
 			if (g_strCurrentExeName != TEXT("RebornLauncher.exe"))
 			{
 				TCHAR newPath[MAX_PATH];
 				swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
 				CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
-				// 启动新的进程
+				// 鍚姩鏂扮殑杩涚▼
 				ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
                 WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
 				ExitProcess(0);
@@ -765,17 +645,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 #endif
 
-    g_pSpriteMgr = new SpriteManager();
-	g_pResMgr = new ResourceManager(hInstance);
-
-    // 初始化全局字符串
-    LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
+    // 鍒濆鍖栧叏灞€瀛楃涓?    LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
     std::cout << "77777777777777" << std::endl;
 
 
-    // 执行应用程序初始化:
+    // 鎵ц搴旂敤绋嬪簭鍒濆鍖?
     if (!InitInstance (hInstance, true))
     {
         std::cout << "888888888888" << std::endl;
@@ -783,19 +659,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     WorkThread workThread(g_hWnd, g_strCurrentModulePath, g_strCurrentExeName, g_strWorkPath);
+    g_workThreadPtr = &workThread;
+    ApplyP2PSettings();
     InitTrayIcon(g_hWnd);
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_REBORNLAUNCHER));
 
     MSG msg;
 
-	SetTimer(g_hWnd, 1, 100, NULL);
-
-    // 主消息循环:
-    while (true)
+    // 涓绘秷鎭惊鐜?
+    bool running = true;
+    while (running)
     {
-        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
         {
+            if (msg.message == WM_QUIT) {
+                running = false;
+                break;
+            }
             if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg))
             {
                 TranslateMessage(&msg);
@@ -803,63 +684,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             }
         }
 
-        if (workThread.GetTotalDownload() > 0)
-        {
-			g_fProgressTotal = workThread.GetCurrentDownload() * 1.f / workThread.GetTotalDownload() * 1.f;
+        if (!running) {
+            break;
         }
 
-        if (workThread.GetCurrentDownloadSize() > 0)
-        {
-            g_nCurrentFileSize = workThread.GetCurrentDownloadSize();
-            g_nCurrentFileDownloaded = workThread.GetCurrentDownloadProgress();
-
-            g_fProgressCurrent = g_nCurrentFileDownloaded * 1.f / g_nCurrentFileSize * 1.f;
-			g_strCurrentFile = workThread.GetCurrentDownloadFile();
-        }
-
-        g_pSpriteMgr->Update(GetTickCount64() % UINT_MAX);
-
-        UpdateLoadingAnimation( msg.hwnd );
-
-        // 退出
-		// if (msg.message == WM_QUIT)
-		// {
-        //     std::cout << "eeeeeeeeeeeeeeeeeeee" << std::endl;
-        //     workThread.Stop();
-		// 	break;
-		// }
-        // 
-        // if (msg.message == WM_COMMAND)
-        // {
-        //     int wmId = LOWORD(msg.wParam);
-		// 	if (wmId == IDM_EXIT)
-		// 	{
-		// 		workThread.Stop();
-		// 	}
-        // }
+        UpdateProgressUi(workThread);
+        Sleep(15);
     }
 
-    std::cout << "请求中止" << std::endl;
+    std::cout << "璇锋眰涓" << std::endl;
     workThread.Stop();
-	// 把配置项的进程ID清空
+	// 鎶婇厤缃」鐨勮繘绋婭D娓呯┖
 	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+	g_workThreadPtr = nullptr;
 
     std::cout << "ooooooooooooooooooo" << std::endl;
-
-    GdiplusShutdown(g_gdiplusToken);
-    DeleteObject(g_hBitmap);
-
-    delete g_pSpriteMgr;
-    delete g_pResMgr;
 
     CoUninitialize();
     return (int) msg.wParam;
 }
 
 //
-//  函数: MyRegisterClass()
+//  鍑芥暟: MyRegisterClass()
 //
-//  目标: 注册窗口类。
+//  鐩爣: 娉ㄥ唽绐楀彛绫汇€?
 //
 ATOM MyRegisterClass(HINSTANCE hInstance)
 {
@@ -883,21 +731,24 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 }
 
 //
-//   函数: InitInstance(HINSTANCE, int)
+//   鍑芥暟: InitInstance(HINSTANCE, int)
 //
-//   目标: 保存实例句柄并创建主窗口
+//   鐩爣: 淇濆瓨瀹炰緥鍙ユ焺骞跺垱寤轰富绐楀彛
 //
-//   注释:
+//   娉ㄩ噴:
 //
-//        在此函数中，我们在全局变量中保存实例句柄并
-//        创建和显示主程序窗口。
+//        鍦ㄦ鍑芥暟涓紝鎴戜滑鍦ㄥ叏灞€鍙橀噺涓繚瀛樺疄渚嬪彞鏌勫苟
+//        鍒涘缓鍜屾樉绀轰富绋嬪簭绐楀彛銆?
 //
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
-   hInst = hInstance; // 将实例句柄存储在全局变量中
+   hInst = hInstance; // 灏嗗疄渚嬪彞鏌勫瓨鍌ㄥ湪鍏ㄥ眬鍙橀噺涓?
+   INITCOMMONCONTROLSEX icc{ sizeof(INITCOMMONCONTROLSEX), ICC_PROGRESS_CLASS };
+   InitCommonControlsEx(&icc);
 
-   HWND hWnd = CreateWindowExW(WS_EX_LAYERED, szWindowClass, L"枫叶重生",
-       WS_POPUP, g_ptWindow.x, g_ptWindow.y,g_szWindow.cx,g_szWindow.cy, nullptr, nullptr, hInstance, nullptr);
+   HWND hWnd = CreateWindowExW(0, szWindowClass, L"鏋彾閲嶇敓",
+       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+       g_ptWindow.x, g_ptWindow.y,g_szWindow.cx,g_szWindow.cy, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
    {
@@ -906,13 +757,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
    g_hWnd = hWnd;
 
-   // SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
-   // 置顶并移到最中间
-   g_ptWindow.x = GetSystemMetrics(SM_CXSCREEN) / 3;
-   g_ptWindow.y = GetSystemMetrics(SM_CYSCREEN) / 5;
-   SetWindowPos(hWnd, HWND_TOPMOST, g_ptWindow.x, g_ptWindow.y, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
+   g_ptWindow.x = (GetSystemMetrics(SM_CXSCREEN) - g_szWindow.cx) / 2;
+   g_ptWindow.y = (GetSystemMetrics(SM_CYSCREEN) - g_szWindow.cy) / 2;
+   SetWindowPos(hWnd, nullptr, g_ptWindow.x, g_ptWindow.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
@@ -921,141 +768,28 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 }
 
 //
-//  函数: WndProc(HWND, UINT, WPARAM, LPARAM)
+//  鍑芥暟: WndProc(HWND, UINT, WPARAM, LPARAM)
 //
-//  目标: 处理主窗口的消息。
+//  鐩爣: 澶勭悊涓荤獥鍙ｇ殑娑堟伅銆?
 //
-//  WM_COMMAND  - 处理应用程序菜单
-//  WM_PAINT    - 绘制主窗口
-//  WM_DESTROY  - 发送退出消息并返回
+//  WM_COMMAND  - 澶勭悊搴旂敤绋嬪簭鑿滃崟
+//  WM_PAINT    - 缁樺埗涓荤獥鍙?
+//  WM_DESTROY  - 鍙戦€侀€€鍑烘秷鎭苟杩斿洖
 //
 //
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
-    case WM_NCHITTEST:
-    {
-		LRESULT hit = DefWindowProc(hWnd, message, wParam, lParam);
-		if (hit == HTCLIENT)
-            return HTCAPTION;
-		return hit;
-    }
 	case WM_CREATE:
 	{
-		// 创建一个DLG
-		// LauncherMainDlg dlg;
-		// dlg.Create(hWnd);
-		// 创建一个状态条
-		// dlg.CreateStatusBar();
-		// 更新状态条
-		// dlg.UpdateStatusBar(100, 50, 1, 10);
-
-                // 初始化 GDI+
-        InitGDIPlus(g_gdiplusToken);
-
-        // 加载透明图像
-        g_hBitmap = LoadImageFromResource(IDB_UI1);
-        // 加载猪
-		//for (int i = 0; i < sizeof g_hPigBitmap / sizeof g_hPigBitmap[0]; i++)
-		//{
-		//	g_hPigBitmap[i] = LoadPngFromResource(IDB_PIG1 + i);
-		//}
-
-		g_hBkBitmap = ResourceManager::LoadPngFromResource(IDB_UI1,g_hInstance);
-		// 从导入资源加载ID_UI1 而不是文件 从资源加载图片
-
-		//g_pSpriteMgr->CreateSprite([](std::shared_ptr<Sprite> pSprite) {
-		//	pSprite->SetX(100);
-		//	pSprite->SetY(100);
-		//	pSprite->SetWidth(100);
-		//	pSprite->SetHeight(100);
-		//	pSprite->SetJumpHeight(100);
-		//	pSprite->SetJumpSpeed(10);
-		//	pSprite->SetJumpAcceleration(1);
-		//	pSprite->SetMoveSpeed(5);
-
-  //          Frame* pFrame = new Frame();
-		//	for (int i = 0; i < 3; i++)
-		//	{
-		//		pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_STAND0 + i));
-		//	}
-
-		//	pSprite->SetBitmapFrame(SpriteState::Stand, pFrame);
-
-		//	pFrame = new Frame();
-		//	for (int i = 0; i < 7; i++)
-		//	{
-		//		pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_MOVE0 + i));
-		//	}
-
-		//	pSprite->SetBitmapFrame(SpriteState::Move, pFrame);
-
-		//	pFrame = new Frame();
-
-		//	for (int i = 0; i < 1; i++)
-		//	{
-		//		pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_LSL_JUMP0 + i));
-		//	}
-
-		//	pSprite->SetBitmapFrame(SpriteState::Jump, pFrame);
-
-		//	return true;
-		//});
-
-        g_pSpriteMgr->CreateSprite([](std::shared_ptr<Sprite> pSprite) {
-			pSprite->SetX(300);
-			pSprite->SetY(100);
-			pSprite->SetWidth(100);
-			pSprite->SetHeight(100);
-			pSprite->SetJumpHeight(100);
-			pSprite->SetJumpSpeed(10);
-			pSprite->SetJumpAcceleration(1);
-            pSprite->SetMoveSpeed(1);
-
-            // 
-			Frame* pFrame = new Frame();
-            for (int i = 0; i < 3; i++)
-            {
-                pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
-            }
-			pSprite->SetBitmapFrame(SpriteState::Stand, pFrame);
-
-			pFrame = new Frame();
-			for (int i = 0; i < 7; i++)
-			{
-				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
-			}
-			pSprite->SetBitmapFrame(SpriteState::Move, pFrame);
-
-            pFrame = new Frame();
-			for (int i = 0; i < 1; i++)
-			{
-				pFrame->AddBitmap(g_pResMgr->GetBitmap(IDB_PIG1 + i));
-			}
-
-			pSprite->SetBitmapFrame(SpriteState::Jump, pFrame);
-
-            g_pigSprite = pSprite;
-            g_pigSprite->MoveRight();
-
-            return true;
-        });
-
-        // 设置分层窗口
-        SetLayeredWindow(hWnd, g_hBitmap);
+		CreateMainControls(hWnd);
+		LoadStunServers();
+		ApplyP2PSettings();
 		break;
 	}
     case WM_TRAYICON:
-        //if (lParam == WM_LBUTTONDOWN || lParam == WM_RBUTTONDOWN) {
-        //    // 处理托盘图标的点击事件，例如显示窗口
-        //    // ShowWindow(hWnd, SW_RESTORE);
-        //    // SetForegroundWindow(hWnd);
-        //    // DeleteTrayIcon();
-        //    RestoreFromTray(hWnd);
-        //}
-
-		// 右键菜单
+		// 鍙抽敭鑿滃崟
 		if (lParam == WM_RBUTTONDOWN)
 		{
 			POINT pt;
@@ -1069,7 +803,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		}
         break;
     case WM_MINIMIZE_TO_TRAY:
-		// 最小化到托盘
 		MinimizeToTray(hWnd);
 		break;
     case WM_DELETE_TRAY:
@@ -1077,27 +810,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 	case WM_SYSCOMMAND:
 		if ((wParam & 0xFFF0) == SC_MINIMIZE) {
-			// 最小化到托盘
             MinimizeToTray(hWnd);
 			return 0;
 		}
-        if ((wParam & 0xFFF0) == SC_CLOSE)
-        {
-            // 最小化到托盘
-            // MinimizeToTray(hWnd);
-            
-            // 退出进程
-            DeleteTrayIcon();
-			PostQuitMessage(0);
-        }
-		break;
-        // 窗口被最小化
+        break;
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
-            // 分析菜单选择:
+			int notify = HIWORD(wParam);
             switch (wmId)
             {
+			case ID_CHECK_P2P:
+				if (notify == BN_CLICKED) {
+					ApplyP2PSettings();
+				}
+				break;
+			case ID_STUN_ADD:
+				if (notify == BN_CLICKED) {
+					AddStunServerFromEdit();
+				}
+				break;
+			case ID_STUN_LIST:
+				if (notify == LBN_DBLCLK) {
+					RemoveSelectedStunServer();
+				}
+				break;
             case IDM_EXIT:
                 DestroyWindow(hWnd);
                 break;
@@ -1106,29 +843,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
         }
         break;
-    case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            // TODO: 在此处添加使用 hdc 的任何绘图代码...
-            EndPaint(hWnd, &ps);
-        }
-        break;
     case WM_MOVE:
     {
-        // 获取窗口当前位置
+        // 鑾峰彇绐楀彛褰撳墠浣嶇疆
         g_ptWindow.x = LOWORD(lParam);
         g_ptWindow.y = HIWORD(lParam);
         break;
     }
-    // 从任务栏叉掉时
 	case WM_CLOSE:
-		// 最小化到托盘
-		MinimizeToTray(hWnd);
+		DestroyWindow(hWnd);
 		break;
     case WM_DESTROY:
-        // 删除托盘图标
-        DeleteTrayIcon();
+		DeleteTrayIcon();
         PostQuitMessage(0);
         break;
     default:

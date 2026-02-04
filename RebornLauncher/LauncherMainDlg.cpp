@@ -5,7 +5,7 @@
 
 void LauncherMainDlg::Create(HWND hParentWnd)
 {
-	// ´´½¨Ò»¸ö´°¿Ú
+	// é’æ¶˜ç¼“æ¶“â‚¬æ¶“î†ç¥é™?
 	m_hWnd = CreateDialog(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_DLG_MAIN), hParentWnd, (DLGPROC)LauncherMainDlg::DlgProc);
 	ShowWindow(m_hWnd, SW_SHOW);
 	UpdateWindow(m_hWnd);
@@ -15,23 +15,23 @@ void LauncherMainDlg::Create(HWND hParentWnd)
 
 void LauncherMainDlg::CreateStatusBar()
 {
-	// ´´½¨×´Ì¬ÌõÔÚ´°¿ÚÉÏ
+	// é’æ¶˜ç¼“é˜èˆµâ‚¬ä½¹æ½¯é¦ã„§ç¥é™ï½„ç¬‚
 	m_hStatus = CreateWindowEx(0, STATUSCLASSNAME, NULL, WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 		0, 0, 0, 0, m_hWnd, NULL, GetModuleHandle(NULL), NULL);
-	// ¸ø×´Ì¬ÌõÌí¼ÓÒ»¸ö±êÇ©ÓÃÒÔËµÃ÷£¬ Ìí¼ÓÒ»¸ö´¦ÀíÎÄ¼şÊıÁ¿ÎÄ×Ö ±ÈÈç 1/1000 Ìí¼ÓÒ»¸ö×Ü½ø¶ÈÌõ ³õÊ¼ÖµÎª0 ×î´ó 100£¬Ìí¼ÓÒ»¸ö½ø¶ÈÌõ²é¿´ÕıÔÚÏÂÔØµÄÎÄ¼ş½ø¶È
+	// ç¼æ¬‘å§¸é¬ä½¹æ½¯å¨£è¯²å§æ¶“â‚¬æ¶“î…çˆ£ç»›å‰§æ•¤æµ ãƒ¨î‡©é„åº¯ç´ å¨£è¯²å§æ¶“â‚¬æ¶“î„î˜©éå—˜æƒæµ èˆµæšŸé–²å¿”æƒç€›?å§£æ–¿î›§ 1/1000 å¨£è¯²å§æ¶“â‚¬æ¶“î…â‚¬æ˜ç¹˜æ´ï¸½æ½¯ é’æ¿†îéŠé—´è´Ÿ0 éˆâ‚¬æ¾¶?100é”›å±¾åŠé”çŠ±ç«´æ¶“î‡ç¹˜æ´ï¸½æ½¯éŒãƒ§æ¹…å§ï½…æ¹ªæ¶“å¬­æµ‡é¨å‹¬æƒæµ æƒ°ç¹˜æ´?
 	int parts[] = { 200, 300, 500, -1 };
 	SendMessage(m_hStatus, SB_SETPARTS, 4, (LPARAM)parts);
-	SendMessage(m_hStatus, SB_SETTEXT, 0, (LPARAM)L"ÕıÔÚ¼ì²é¸üĞÂ...");
+	SendMessage(m_hStatus, SB_SETTEXT, 0, (LPARAM)L"å§ï½…æ¹ªå¦«â‚¬éŒãƒ¦æ´¿é‚?..");
 	SendMessage(m_hStatus, SB_SETTEXT, 1, (LPARAM)L"1/1000");
-	// Ìõ×´µÄÄÇÖÖ½ø¶ÈÌõ
+	// é‰ï¼„å§¸é¨å‹¯å…ç»‰å¶ˆç¹˜æ´ï¸½æ½¯
 	RECT rc;
-	SendMessage(m_hStatus, SB_GETRECT, 2, (LPARAM)&rc); // »ñÈ¡µÚ3¸ö²¿·ÖµÄ¾ØĞÎÇøÓò
+	SendMessage(m_hStatus, SB_GETRECT, 2, (LPARAM)&rc); // é‘¾å³°å½‡ç»—?æ¶“îˆå„´é’å—™æ®‘é­â•èˆ°é–å“„ç…™
 	m_hProgressTotal = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
 		rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, m_hStatus, NULL, GetModuleHandle(NULL), NULL);
 	SendMessage(m_hProgressTotal, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessage(m_hProgressTotal, PBM_SETPOS, 0, 0);
 
-	SendMessage(m_hStatus, SB_GETRECT, 3, (LPARAM)&rc); // »ñÈ¡µÚ4¸ö²¿·ÖµÄ¾ØĞÎÇøÓò
+	SendMessage(m_hStatus, SB_GETRECT, 3, (LPARAM)&rc); // é‘¾å³°å½‡ç»—?æ¶“îˆå„´é’å—™æ®‘é­â•èˆ°é–å“„ç…™
 
 	m_hProgressCurrent = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
 		rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, m_hStatus, NULL, GetModuleHandle(NULL), NULL);
@@ -54,14 +54,14 @@ LRESULT LauncherMainDlg::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 	{
 	case WM_INITDIALOG:
 	{
-		// ÉèÖÃ´°¿Ú±êÌâ
+		// ç’å‰§ç–†ç»æ¥€å½›éå›¬î•½
 		SetWindowText(hWnd, L"Reborn Launcher");
 		return TRUE;
 	}
 	case WM_COMMAND:
 	{
 		int wmId = LOWORD(wParam);
-		// ·ÖÎö²Ëµ¥Ñ¡Ôñ:
+		// é’å—˜ç€½é‘¿æ»ƒå´Ÿé–«å¤‹å«¨:
 		switch (wmId)
 		{
 		case IDM_ABOUT:
@@ -75,7 +75,7 @@ LRESULT LauncherMainDlg::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 			return DefWindowProc(hWnd, message, wParam, lParam);
 		}
 	}
-	// ÓÒÉÏ½ÇµÄ²æ
+	// é™å……ç¬‚ç‘™æ”æ®‘é™?
 	case WM_DESTROY:
 	{
 		PostQuitMessage(0);

@@ -1,0 +1,533 @@
+#include "framework.h"
+#include "UpdateForge.h"
+#include "FileHash.h"
+
+#include <json/json.h>
+#include <cryptopp/sha.h>
+#include <cryptopp/aes.h>
+#include <cryptopp/modes.h>
+#include <cryptopp/filters.h>
+
+#include <shobjidl.h>
+#include <commctrl.h>
+
+#include <string>
+#include <vector>
+#include <filesystem>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <set>
+#include <map>
+#include <sstream>
+#include <fstream>
+#include <cwctype>
+#include <algorithm>
+
+using namespace std;
+namespace fs = std::filesystem;
+
+constexpr UINT WM_APP_LOG = WM_APP + 1;
+constexpr UINT WM_APP_DONE = WM_APP + 2;
+
+struct FileTask
+{
+    std::wstring fullPath;
+    std::wstring relPath;
+    int64_t version;
+};
+
+struct FileResult
+{
+    std::wstring relPath;
+    int64_t version;
+    int64_t size;
+    std::string md5;
+};
+
+static std::string NarrowACP(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    int len = WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring PickFolder(HWND owner)
+{
+    std::wstring result;
+    IFileOpenDialog* dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
+    {
+        DWORD opts = 0;
+        if (SUCCEEDED(dialog->GetOptions(&opts)))
+        {
+            dialog->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        }
+        if (SUCCEEDED(dialog->Show(owner)))
+        {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)))
+            {
+                PWSTR psz = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &psz)))
+                {
+                    result = psz;
+                    CoTaskMemFree(psz);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    return result;
+}
+
+static std::string EncryptData(const std::string& plain, const std::wstring& keyText)
+{
+    using namespace CryptoPP;
+
+    std::string keyBytes = NarrowACP(keyText);
+    if (keyBytes.empty()) {
+        keyBytes = "update-forge-default-key";
+    }
+    SHA256 sha;
+    std::string digest(32, 0);
+    sha.CalculateDigest(reinterpret_cast<byte*>(digest.data()), reinterpret_cast<const byte*>(keyBytes.data()), keyBytes.size());
+
+    byte iv[AES::BLOCKSIZE]{};
+    memcpy(iv, digest.data(), AES::BLOCKSIZE);
+
+    std::string cipher;
+    CBC_Mode<AES>::Encryption enc(reinterpret_cast<const byte*>(digest.data()), digest.size(), iv);
+    StringSource ss(plain, true, new StreamTransformationFilter(enc, new StringSink(cipher)));
+    return cipher;
+}
+
+int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
+    _In_opt_ HINSTANCE hPrevInstance,
+    _In_ LPWSTR lpCmdLine,
+    _In_ int nCmdShow)
+{
+    UNREFERENCED_PARAMETER(hPrevInstance);
+    UNREFERENCED_PARAMETER(lpCmdLine);
+
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES };
+    InitCommonControlsEx(&icc);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    UpdateForgeApp app(hInstance);
+    int ret = app.Run(nCmdShow);
+
+    CoUninitialize();
+    return ret;
+}
+
+UpdateForgeApp::UpdateForgeApp(HINSTANCE hInst)
+    : m_hInst(hInst)
+{
+}
+
+int UpdateForgeApp::Run(int nCmdShow)
+{
+    InitWindow(nCmdShow);
+
+    MSG msg{};
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return static_cast<int>(msg.wParam);
+}
+
+void UpdateForgeApp::InitWindow(int nCmdShow)
+{
+    const wchar_t* CLASS_NAME = L"UpdateForgeMainWindow";
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = UpdateForgeApp::WndProc;
+    wc.hInstance = m_hInst;
+    wc.lpszClassName = CLASS_NAME;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+
+    RegisterClassExW(&wc);
+
+    m_hWnd = CreateWindowExW(0, CLASS_NAME, L"UpdateForge - 鐗堟湰淇℃伅鐢熸垚鍣?, WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT, 760, 540, nullptr, nullptr, m_hInst, this);
+
+    CreateControls();
+
+    ShowWindow(m_hWnd, nCmdShow);
+    UpdateWindow(m_hWnd);
+}
+
+void UpdateForgeApp::CreateControls()
+{
+    HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+    int x = 16;
+    int y = 18;
+
+    CreateWindowExW(0, L"STATIC", L"鏇存柊鐩綍:", WS_CHILD | WS_VISIBLE, x, y, 80, 20, m_hWnd, nullptr, m_hInst, nullptr);
+    m_editPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        x + 80, y - 2, 430, 24, m_hWnd, nullptr, m_hInst, nullptr);
+    m_btnBrowse = CreateWindowExW(0, L"BUTTON", L"娴忚...", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        x + 520, y - 2, 80, 24, m_hWnd, reinterpret_cast<HMENU>(1), m_hInst, nullptr);
+
+    y += 36;
+    CreateWindowExW(0, L"STATIC", L"鍔犲瘑瀵嗛挜:", WS_CHILD | WS_VISIBLE, x, y, 80, 20, m_hWnd, nullptr, m_hInst, nullptr);
+    m_editKey = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        x + 80, y - 2, 240, 24, m_hWnd, nullptr, m_hInst, nullptr);
+    m_chkEncrypt = CreateWindowExW(0, L"BUTTON", L"鍚敤鍔犲瘑", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        x + 340, y - 2, 100, 24, m_hWnd, reinterpret_cast<HMENU>(2), m_hInst, nullptr);
+    m_btnGenerate = CreateWindowExW(0, L"BUTTON", L"鐢熸垚鐗堟湰鏂囦欢", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        x + 480, y - 2, 120, 24, m_hWnd, reinterpret_cast<HMENU>(3), m_hInst, nullptr);
+
+    y += 34;
+    CreateWindowExW(0, L"STATIC", L"鏃ュ織:", WS_CHILD | WS_VISIBLE, x, y, 80, 20, m_hWnd, nullptr, m_hInst, nullptr);
+    m_editLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+        x, y + 20, 700, 360, m_hWnd, nullptr, m_hInst, nullptr);
+
+    HWND controls[] = { m_editPath, m_btnBrowse, m_editKey, m_chkEncrypt, m_btnGenerate, m_editLog };
+    for (HWND h : controls)
+    {
+        SendMessage(h, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+    }
+
+    // 榛樿鎸囧悜褰撳墠鐩綍涓嬬殑 Update 鏂囦欢澶癸紝渚夸簬蹇€熼€夋嫨
+    wchar_t cwd[MAX_PATH]{};
+    if (GetCurrentDirectoryW(MAX_PATH, cwd))
+    {
+        std::wstring guess = cwd;
+        guess.append(L"\\Update");
+        SetWindowTextW(m_editPath, guess.c_str());
+    }
+}
+
+void UpdateForgeApp::OnBrowse()
+{
+    auto path = PickFolder(m_hWnd);
+    if (!path.empty())
+    {
+        SetWindowTextW(m_editPath, path.c_str());
+    }
+}
+
+void UpdateForgeApp::OnGenerate()
+{
+    if (m_hWorker)
+    {
+        AppendLogAsync(L"浠诲姟姝ｅ湪杩愯锛岃绋嶅€?..");
+        return;
+    }
+
+    wchar_t pathBuf[MAX_PATH]{};
+    GetWindowTextW(m_editPath, pathBuf, MAX_PATH);
+    std::wstring root = pathBuf;
+
+    if (root.empty())
+    {
+        AppendLogAsync(L"璇烽€夋嫨鏇存柊鐩綍");
+        return;
+    }
+
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec))
+    {
+        AppendLogAsync(L"鐩綍涓嶅瓨鍦ㄦ垨涓嶅彲璁块棶");
+        return;
+    }
+
+    wchar_t keyBuf[256]{};
+    GetWindowTextW(m_editKey, keyBuf, 256);
+    std::wstring key = keyBuf;
+    bool encrypt = (SendMessageW(m_chkEncrypt, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
+    SetBusy(true);
+    m_hWorker = reinterpret_cast<HANDLE>(1);
+    RunWorker(std::move(root), std::move(key), encrypt);
+}
+
+void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt)
+{
+    std::thread([this, root = std::move(root), key = std::move(key), encrypt]() {
+        auto log = [this](const std::wstring& text) { AppendLogAsync(text); };
+
+        std::map<std::wstring, FileTask> latest;
+        std::set<std::wstring> runtimeCandidates;
+
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root, ec); it != fs::recursive_directory_iterator(); ++it)
+        {
+            if (ec)
+            {
+                log(L"閬嶅巻鐩綍鏃跺嚭閿? " + std::to_wstring(ec.value()));
+                break;
+            }
+            if (!it->is_regular_file())
+                continue;
+
+            auto rel = fs::relative(it->path(), root, ec);
+            if (ec)
+                continue;
+            std::wstring relPath = rel.native();
+            size_t pos = relPath.find_first_of(L"\\/");
+            if (pos == std::wstring::npos)
+                continue;
+
+            std::wstring stamp = relPath.substr(0, pos);
+            int64_t ver = _wtoll(stamp.c_str());
+            if (ver == 0)
+                continue;
+
+            std::wstring page = relPath.substr(pos + 1);
+            if (page.empty())
+                continue;
+
+            std::wstring ext = fs::path(page).extension().wstring();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+            if (ext == L".exe" || ext == L".dll" || ext == L".wz" || ext == L".ini" || ext == L".acm")
+            {
+                runtimeCandidates.insert(page);
+            }
+
+            auto found = latest.find(page);
+            if (found == latest.end() || found->second.version < ver)
+            {
+                latest[page] = FileTask{ it->path().wstring(), page, ver };
+            }
+        }
+
+        std::vector<FileTask> tasks;
+        tasks.reserve(latest.size());
+        for (auto& kv : latest)
+        {
+            tasks.push_back(kv.second);
+        }
+
+        log(L"闇€瑕佸鐞嗙殑鏂囦欢鏁? " + std::to_wstring(tasks.size()));
+
+        std::vector<FileResult> results;
+        results.reserve(tasks.size());
+        std::set<std::wstring> runtimeList;
+
+        unsigned int threads = std::thread::hardware_concurrency();
+        if (threads == 0) threads = 4;
+        threads *= 2;
+        if (threads > tasks.size())
+            threads = static_cast<unsigned int>(std::max<size_t>(1, tasks.size()));
+
+        std::atomic<size_t> index{ 0 };
+        std::mutex resMutex;
+
+        auto workerFn = [&]() {
+            while (true)
+            {
+                size_t i = index.fetch_add(1);
+                if (i >= tasks.size())
+                    break;
+                const auto& task = tasks[i];
+
+                std::error_code fec;
+                auto fsize = fs::file_size(task.fullPath, fec);
+                if (fec)
+                {
+                    log(L"鏂囦欢宸茶鍒犻櫎锛岃烦杩? " + task.relPath);
+                    continue;
+                }
+
+                std::string md5;
+                try
+                {
+                    md5 = FileHash::file_md5(task.fullPath);
+                }
+                catch (...)
+                {
+                    log(L"璁＄畻澶辫触: " + task.relPath);
+                    continue;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(resMutex);
+                    results.push_back(FileResult{ task.relPath, task.version, static_cast<int64_t>(fsize), md5 });
+                    if (runtimeCandidates.count(task.relPath))
+                    {
+                        runtimeList.insert(task.relPath);
+                    }
+                }
+            }
+        };
+
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
+        for (unsigned int i = 0; i < threads; ++i)
+        {
+            pool.emplace_back(workerFn);
+        }
+        for (auto& t : pool) t.join();
+
+        if (results.empty())
+        {
+            PostMessageW(m_hWnd, WM_APP_DONE, FALSE, reinterpret_cast<LPARAM>(new std::wstring(L"鏈敓鎴愪换浣曟暟鎹?)));
+            return;
+        }
+
+        int64_t latestTime = 0;
+        Json::Value rootJson;
+        for (auto& r : results)
+        {
+            Json::Value item;
+            item["md5"] = r.md5;
+            item["time"] = Json::Int64(r.version);
+            item["size"] = Json::Int64(r.size);
+            item["page"] = NarrowACP(r.relPath);
+            rootJson["file"].append(item);
+            if (r.version > latestTime)
+                latestTime = r.version;
+        }
+
+        rootJson["time"] = Json::Int64(latestTime);
+        for (auto& run : runtimeList)
+        {
+            rootJson["runtime"].append(NarrowACP(run));
+        }
+
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "  ";
+        std::string json = Json::writeString(builder, rootJson);
+
+        std::wstring outPath = root + L"\\Version.dat";
+        bool success = true;
+        std::wstring msg;
+        try
+        {
+            if (encrypt)
+            {
+                auto cipher = EncryptData(json, key);
+                std::ofstream ofs(outPath, std::ios::binary);
+                ofs.write(cipher.data(), static_cast<std::streamsize>(cipher.size()));
+            }
+            else
+            {
+                std::ofstream ofs(outPath, std::ios::binary);
+                ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
+            }
+            msg = L"鐢熸垚瀹屾垚 -> " + outPath;
+            if (encrypt)
+                msg.append(L" (宸插姞瀵?");
+            else
+                msg.append(L" (鏄庢枃)");
+        }
+        catch (...)
+        {
+            success = false;
+            msg = L"鍐欏叆鐗堟湰鏂囦欢澶辫触: " + outPath;
+        }
+
+        PostMessageW(m_hWnd, WM_APP_DONE, success ? TRUE : FALSE, reinterpret_cast<LPARAM>(new std::wstring(msg)));
+    }).detach();
+}
+
+void UpdateForgeApp::SetBusy(bool busy)
+{
+    EnableWindow(m_btnBrowse, !busy);
+    EnableWindow(m_btnGenerate, !busy);
+    EnableWindow(m_editPath, !busy);
+}
+
+void UpdateForgeApp::Log(const std::wstring& text)
+{
+    int len = GetWindowTextLengthW(m_editLog);
+    SendMessageW(m_editLog, EM_SETSEL, len, len);
+    SendMessageW(m_editLog, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
+    SendMessageW(m_editLog, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L"\r\n"));
+}
+
+void UpdateForgeApp::AppendLogAsync(const std::wstring& text)
+{
+    auto* payload = new std::wstring(text);
+    PostMessageW(m_hWnd, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(payload));
+}
+
+void UpdateForgeApp::OnWorkerFinished(bool success, const std::wstring& message)
+{
+    SetBusy(false);
+    m_hWorker = nullptr;
+    AppendLogAsync(message);
+    if (success)
+    {
+        AppendLogAsync(L"瀹屾垚");
+    }
+}
+
+LRESULT CALLBACK UpdateForgeApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    UpdateForgeApp* self = nullptr;
+    if (msg == WM_NCCREATE)
+    {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        self = static_cast<UpdateForgeApp*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->m_hWnd = hwnd;
+    }
+    else
+    {
+        self = reinterpret_cast<UpdateForgeApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    if (!self)
+    {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    switch (msg)
+    {
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case 1:
+            self->OnBrowse();
+            break;
+        case 2:
+            // checkbox handled automatically
+            break;
+        case 3:
+            self->OnGenerate();
+            break;
+        default:
+            break;
+        }
+        break;
+    case WM_APP_LOG:
+    {
+        auto* text = reinterpret_cast<std::wstring*>(lParam);
+        if (text)
+        {
+            self->Log(*text);
+            delete text;
+        }
+        break;
+    }
+    case WM_APP_DONE:
+    {
+        auto* text = reinterpret_cast<std::wstring*>(lParam);
+        bool ok = wParam != 0;
+        if (text)
+        {
+            self->OnWorkerFinished(ok, *text);
+            delete text;
+        }
+        break;
+    }
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    return 0;
+}

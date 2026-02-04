@@ -11,73 +11,36 @@
 #include <shellapi.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include "Encoding.h"
 
 #pragma comment(lib, "advapi32.lib")
 extern bool g_bRendering;
 extern bool IsProcessRunning(DWORD dwProcessId);
-extern float g_fProgressTotal;
-
-std::string wstr2str(const std::wstring& wstr) {
-	std::string result;
-	//»ñÈ¡»º³åÇø´óĞ¡£¬²¢ÉêÇë¿Õ¼ä£¬»º³åÇø´óĞ¡ÊÂ°´×Ö½Ú¼ÆËãµÄ  
-	int len = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), wstr.size(), NULL, 0, NULL, NULL);
-	char* buffer = new char[len + 1];
-	if (!buffer)
-		return "";
-
-	memset(buffer, 0, len + 1);
-	//¿í×Ö½Ú±àÂë×ª»»³É¶à×Ö½Ú±àÂë  
-	WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), wstr.size(), buffer, len, NULL, NULL);
-	buffer[len] = '\0';
-	//É¾³ı»º³åÇø²¢·µ»ØÖµ  
-	result.append(buffer);
-	delete[] buffer;
-	return result;
-}
-
-std::wstring str2wstr(const std::string& str, int strLen) {
-	int hLen = strLen;
-	if (strLen < 0)
-		hLen = str.length();
-	std::wstring result;
-	//»ñÈ¡»º³åÇø´óĞ¡£¬²¢ÉêÇë¿Õ¼ä£¬»º³åÇø´óĞ¡°´×Ö·û¼ÆËã  
-	int len = MultiByteToWideChar(CP_ACP, 0, str.c_str(), hLen, NULL, 0);
-	WCHAR* buffer = new WCHAR[len + 1];
-	if (!buffer)
-		return L"";
-	//¶à×Ö½Ú±àÂë×ª»»³É¿í×Ö½Ú±àÂë  
-	MultiByteToWideChar(CP_ACP, 0, str.c_str(), hLen, buffer, len);
-	buffer[len] = '\0';             //Ìí¼Ó×Ö·û´®½áÎ²  
-	//É¾³ı»º³åÇø²¢·µ»ØÖµ  
-	result.append(buffer);
-	delete[] buffer;
-	return result;
-}
 
 void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::string& data) {
-	// ´ò¿ªÎÄ¼ş£¬ÔÊĞí¹²Ïí¶ÁĞ´
+	// éµæ’³ç´‘é‚å›¦æ¬¢é”›å±½å‘ç’ç¨¿å¡æµœî‚¥î‡°é?
 	HANDLE hFile = CreateFile(
-		strLocalFile.c_str(),                // ÎÄ¼şÃû
-		GENERIC_READ | GENERIC_WRITE,        // ¶ÁĞ´·ÃÎÊ
-		FILE_SHARE_READ | FILE_SHARE_WRITE,  // ¹²Ïí¶ÁĞ´
-		NULL,                                // Ä¬ÈÏ°²È«ÊôĞÔ
-		OPEN_ALWAYS,                         // Èç¹ûÎÄ¼ş²»´æÔÚÔò´´½¨
-		FILE_ATTRIBUTE_NORMAL,               // ÆÕÍ¨ÎÄ¼şÊôĞÔ
-		NULL                                 // ²»Ê¹ÓÃÄ£°åÎÄ¼ş
+		strLocalFile.c_str(),                // é‚å›¦æ¬¢éš?
+		GENERIC_READ | GENERIC_WRITE,        // ç’‡è¯²å•“ç’å—æ£¶
+		FILE_SHARE_READ | FILE_SHARE_WRITE,  // éå˜éŸ©ç’‡è¯²å•“
+		NULL,                                // æ¦›æ¨¿î…»ç€¹å¤Šåçç‚´â‚¬?
+		OPEN_ALWAYS,                         // æ¿¡å‚›ç‰é‚å›¦æ¬¢æ¶“å¶…ç“¨é¦ã„¥å¯é’æ¶˜ç¼“
+		FILE_ATTRIBUTE_NORMAL,               // é…î‡€â‚¬æ°­æƒæµ è·ºç˜é¬?
+		NULL                                 // æ¶“å¶„å¨‡é¢ã„¦Äé‰æŒæƒæµ ?
 	);
 
 	if (hFile == INVALID_HANDLE_VALUE) {
-		std::cerr << "ÎŞ·¨´ò¿ªÎÄ¼ş£¬´íÎó´úÂë: " << GetLastError() << std::endl;
+		std::cerr << "éƒçŠ³ç¡¶éµæ’³ç´‘é‚å›¦æ¬¢é”›å²„æ•Šç’‡îˆ™å”¬é®? " << GetLastError() << std::endl;
 		return;
 	}
 
-	// Ğ´ÈëÊı¾İ
+	// éæ¬å†éç‰ˆåµ
 	DWORD dwBytesWritten = 0;
 	if (!WriteFile(hFile, data.c_str(), data.size(), &dwBytesWritten, NULL)) {
-		std::cerr << "ÎŞ·¨Ğ´ÈëÎÄ¼ş£¬´íÎó´úÂë: " << GetLastError() << std::endl;
+		std::cerr << "éƒçŠ³ç¡¶éæ¬å†é‚å›¦æ¬¢é”›å²„æ•Šç’‡îˆ™å”¬é®? " << GetLastError() << std::endl;
 	}
 
-	// ¹Ø±ÕÎÄ¼ş¾ä±ú
+	// éæŠ½æ£´é‚å›¦æ¬¢é™ãƒ¦ç„º
 	CloseHandle(hFile);
 }
 
@@ -91,10 +54,13 @@ WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::
 	, m_bRun(TRUE)
 	, m_strCurrentDownload(L"")
 	, m_hThread(nullptr)
+	, m_p2pClient(std::make_unique<P2PClient>())
 {
-	// Æô¶¯Ïß³Ì
+	m_p2pSettings.enabled = false;
+	m_p2pSettings.stunServers = { "stun:stun.l.google.com:19302", "stun:global.stun.twilio.com:3478", "stun:stun.cloudflare.com:3478" };
+	// éšîˆšå§©ç»¾è·¨â–¼
 	DWORD dwThreadId = 0;
-	// °Ñ m_hFileMappings ÊÍ·Åµô
+	// é¶?m_hFileMappings é–²å©ƒæ–éº?
 	for (auto hFileMapping : m_hFileMappings)
 	{
 		CloseHandle(hFileMapping);
@@ -117,8 +83,8 @@ WorkThread::~WorkThread()
 
 DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 {
-	// ½áÊøËùÓĞÃû×Ö½Ğ MapleReborn.exe µÄ½ø³Ì
-	// 1. »ñÈ¡ËùÓĞ½ø³Ì
+	// ç¼æ’´æ½«éµâ‚¬éˆå¤Šæ‚•ç€›æ¥€å½¨ MapleReborn.exe é¨å‹®ç¹˜ç»‹?
+	// 1. é‘¾å³°å½‡éµâ‚¬éˆå¤ç¹˜ç»‹?
 	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (hSnapshot != INVALID_HANDLE_VALUE) {
 		PROCESSENTRY32 pe;
@@ -160,16 +126,26 @@ DWORD WorkThread::Run()
 
 	if (!GetDownloadUrl())
 	{
-		MessageBox(m_hMainWnd, L"»ñÈ¡ÏÂÔØµØÖ·Ê§°Ü", L"´íÎó", MB_OK);
+		MessageBox(m_hMainWnd, L"é‘¾å³°å½‡æ¶“å¬­æµ‡é¦æ¿æ½ƒæ¾¶è¾«è§¦", L"é–¿æ¬’î‡¤", MB_OK);
 		Stop();
 		return 0;
 	}
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
+	{
+		std::lock_guard<std::mutex> lock(m_p2pMutex);
+		if (m_p2pSettings.signalEndpoint.empty()) {
+			m_p2pSettings.signalEndpoint = m_strUrl + "/signal";
+		}
+		if (m_p2pClient) {
+			m_p2pClient->UpdateSettings(m_p2pSettings);
+		}
+	}
+
 	m_client = new httplib::Client(m_strUrl);
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// Èç¹û²»´æÔÚDataÄ¿Â¼,ÄÇÃ´ÏÂÔØ»ù´¡°ü
+	// æ¿¡å‚›ç‰æ¶“å¶…ç“¨é¦â€•ataé©î†¼ç¶,é–­ï½„ç®æ¶“å¬­æµ‡é©è™¹î”…é–?
 	if (!std::filesystem::exists("./Data"))
 	{
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
@@ -194,15 +170,15 @@ DWORD WorkThread::Run()
 
 		if (!strLocalVersionDatContent.empty())
 		{
-			// ½âÃÜ Version.datÎÄ¼ş
+			// ç‘™ï½…ç˜‘ Version.daté‚å›¦æ¬¢
 			std::string strLocalVersionDat = DecryptVersionDat(strLocalVersionDatContent);
-			// ÕâÊÇÒ»¸öÒÔÉÏ½á¹¹µÄJSONÄÚÈİ
+			// æ©æ¬æ§¸æ¶“â‚¬æ¶“îƒäº’æ¶“å©„ç²¨é‹å‹­æ®‘JSONéå‘­î†
 			Json::Value root;
 			Json::Reader reader;
 			if (reader.parse(strLocalVersionDat, root)) {
-				// »ñÈ¡°æ±¾ºÅ
+				// é‘¾å³°å½‡é—å Ÿæ¹°é™?
 				m_qwVersion = root["time"].asInt64();
-				// »ñÈ¡ÎÄ¼şĞÅÏ¢
+				// é‘¾å³°å½‡é‚å›¦æ¬¢æ·‡â„ƒä¼…
 				Json::Value filesJson = root["file"];
 				for (auto& fileJson : filesJson) {
 					VersionConfig config;
@@ -214,13 +190,13 @@ DWORD WorkThread::Run()
 					std::filesystem::path filePath = config.m_strPage;
 					std::string strPath = filePath.parent_path().string();
 
-					// ÅĞ¶ÏÄ¿Â¼ÊÇ·ñ´æÔÚ£¬²»´æÔÚ´´½¨
+					// é’ã‚†æŸ‡é©î†¼ç¶é„îˆšæƒç€›æ¨ºæ¹ªé”›å±¼ç¬‰ç€›æ¨ºæ¹ªé’æ¶˜ç¼“
 					if (!strPath.empty() && !std::filesystem::exists(strPath))
 					{
 						std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
 					}
 
-					// ÅĞ¶ÏÎÄ¼şÊÇ·ñ´æÔÚ£¬²»´æÔÚ´´½¨Ò»¸ö¿ÕµÄ
+					// é’ã‚†æŸ‡é‚å›¦æ¬¢é„îˆšæƒç€›æ¨ºæ¹ªé”›å±¼ç¬‰ç€›æ¨ºæ¹ªé’æ¶˜ç¼“æ¶“â‚¬æ¶“î†â”–é¨?
 					if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
 					{
 						std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
@@ -228,7 +204,7 @@ DWORD WorkThread::Run()
 					}
 				}
 
-				// »ñÈ¡ runtime ÎÄ¼şÁĞ±í
+				// é‘¾å³°å½‡ runtime é‚å›¦æ¬¢é’æ¥„ã€ƒ
 				Json::Value downloadList = root["runtime"];
 				for (auto& download : downloadList) {
 					m_vecRunTimeList.push_back(download.asString());
@@ -238,13 +214,13 @@ DWORD WorkThread::Run()
 	}
 
 	GetRemoteVersionFile();
-	// ÏÂÔØRunTimeÎÄ¼ş
+	// æ¶“å¬­æµ‡RunTimeé‚å›¦æ¬¢
 	DownloadRunTimeFile();
 
 	if (m_bUpdateSelf)
 	{
 		Stop();
-		// Æô¶¯ĞÂ¸üĞÂµÄ UpdateTemp.exe ÓÃopenÆô¶¯
+		// éšîˆšå§©é‚ç‰ˆæ´¿é‚æ‰®æ®‘ UpdateTemp.exe é¢â•«penéšîˆšå§©
 		ShellExecute(NULL, L"open", L"UpdateTemp.exe", m_strModulePath.c_str(), m_strModuleDir.c_str(), SW_SHOWNORMAL);
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
 		WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
@@ -254,14 +230,14 @@ DWORD WorkThread::Run()
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	unsigned long long dwTick = GetTickCount64();
-	// °ÑMD5Ğ´µ½MAPÖĞ
+	// é¶å¥™D5éæ¬åŸŒMAPæ¶“?
 	WriteDataToMapping();
 
 	unsigned long long dwNewTick = GetTickCount64();
-	std::cout << "WriteDataToMapping »¨·ÑÊ±¼ä:" << dwNewTick - dwTick << std::endl;
+	std::cout << "WriteDataToMapping é‘ºè¾«å‚éƒå •æ£¿:" << dwNewTick - dwTick << std::endl;
 	dwTick = dwNewTick;
 
-	// Æô¶¯ÓÎÏ·
+	// éšîˆšå§©å¨“å‘Šå™
 	STARTUPINFO si = { sizeof(si) };
 	PROCESS_INFORMATION pi;
 	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
@@ -271,14 +247,14 @@ DWORD WorkThread::Run()
 	PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
 	g_bRendering = false;
 
-	// Create½ø³Ì»¨·ÑÊ±¼ä
+	// Createæ©æ¶šâ–¼é‘ºè¾«å‚éƒå •æ£¿
 	dwNewTick = GetTickCount64();
-	std::cout << "CreateProcess »¨·ÑÊ±¼ä:" << dwNewTick - dwTick << std::endl;
+	std::cout << "CreateProcess é‘ºè¾«å‚éƒå •æ£¿:" << dwNewTick - dwTick << std::endl;
 
 	m_hGameProcess[0] = pi.hProcess;
 	m_dwGameProcessId[0] = pi.dwProcessId;
 
-	// Ğ´ÈëPID
+	// éæ¬å†PID
 	TCHAR szPID[32] = { 0 };
 	_itow_s(pi.dwProcessId, szPID, 10);
 	WriteProfileString(TEXT("MapleReborn"), TEXT("Client1PID"), szPID);
@@ -306,7 +282,7 @@ DWORD WorkThread::Run()
 			}
 		}
 
-		// Á½¸ö½ø³Ì¶¼ËÀÁË£¬»Ö¸´´°¿Ú
+		// æ¶“ã‚„é‡œæ©æ¶šâ–¼é–®èŠ¥î„´æµœå—­ç´é­ãˆ î˜²ç»æ¥€å½›
 		if (bHaveGameRun == false && g_bRendering == false)
 		{
 			PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
@@ -316,7 +292,7 @@ DWORD WorkThread::Run()
 		Sleep(1);
 	} while (m_bRun);
 
-	// ÊÕÎ²´¦Àí
+	// é€è·ºç†¬æ¾¶å‹­æ‚Š
 	for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
 	{
 		if (m_hGameProcess[i])
@@ -345,26 +321,26 @@ std::string WorkThread::DecryptUrl(const std::string& ciphertext)
 	HCRYPTKEY hKey;
 	HCRYPTHASH hHash;
 
-	// »ñÈ¡¼ÓÃÜÌá¹©³ÌĞò¾ä±ú
+	// é‘¾å³°å½‡é”çŠ²ç˜‘é»æ„ªç·µç»‹å¬ªç°­é™ãƒ¦ç„º
 	if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
 		HandleError("CryptAcquireContext failed");
 		return ciphertext;
 	}
 
-	// ´´½¨¹şÏ£¶ÔÏó
+	// é’æ¶˜ç¼“éå ç¬‡ç€µç¡…è–„
 	if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
 		HandleError("CryptCreateHash failed");
 		return ciphertext;
 	}
 
-	// ¹şÏ£ÃÜÔ¿
+	// éå ç¬‡ç€µå—›æŒœ
 	const char* key = "cDds!ErF9sIe6u$B";
 	if (!CryptHashData(hHash, (BYTE*)key, strlen(key), 0)) {
 		HandleError("CryptHashData failed");
 		return ciphertext;
 	}
 
-	// ÅÉÉú AES ÃÜÔ¿
+	// å¨²å‰§æ•“ AES ç€µå—›æŒœ
 	if (!CryptDeriveKey(hProv, CALG_AES_256, hHash, 0, &hKey)) {
 		HandleError("CryptDeriveKey failed");
 		return ciphertext;
@@ -391,7 +367,7 @@ std::string WorkThread::DecryptUrl(const std::string& ciphertext)
 
 std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 {
-	// ¶ÔÓ¦ÒÔÉÏ¼ÓÃÜ¹ı³ÌÀ´½âÃÜ ×Ö
+	// ç€µç‘°ç°²æµ ãƒ¤ç¬‚é”çŠ²ç˜‘æ©å›©â–¼é‰ãƒ¨Ğ’ç€µ?ç€›?
 	std::string strDict = "KRu998Am";
 	ZSTD_DDict* ddict = ZSTD_createDDict(strDict.c_str(), strDict.length());
 	std::string strCompress = ciphertext;
@@ -413,7 +389,7 @@ void WorkThread::DownloadRunTimeFile()
 	m_nCurrentDownload = 0;
 	for (auto& download : m_vecRunTimeList)
 	{
-		// ÏÈ²é¿´±¾µØÊÇ·ñ´æÔÚÕâ¸öÎÄ¼ş
+		// éå Ÿç…¡éªå¬«æ¹°é¦ç‰ˆæ§¸éšï¹€ç“¨é¦ã„¨ç¹–æ¶“î…æƒæµ ?
 		std::string strLocalFile = download;
 		std::string strPage = m_strPage + "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download;
 		std::replace(strPage.begin(), strPage.end(), '\\', '/');
@@ -423,7 +399,7 @@ void WorkThread::DownloadRunTimeFile()
 		m_nCurrentDownloadSize = m_mapFiles[download].m_qwSize;
 		m_nCurrentDownloadProgress = 0;
 
-		// ¶Ô±ÈMD5
+		// ç€µè§„ç˜®MD5
 		auto it = m_mapFiles.find(strLocalFile);
 		if (it != m_mapFiles.end())
 		{
@@ -441,28 +417,28 @@ void WorkThread::DownloadRunTimeFile()
 			}
 		}
 		
-		std::cout << __FILE__ << ":" << __LINE__<< " ÎÄ¼ş:" << strLocalFile << std::endl;
+		std::cout << __FILE__ << ":" << __LINE__<< " é‚å›¦æ¬¢:" << strLocalFile << std::endl;
 
-		// Èç¹ûÎÄ¼şÃûÊÇ×ÔÉí
+		// æ¿¡å‚›ç‰é‚å›¦æ¬¢éšå¶†æ§¸é‘·î‡éŸ©
 		if (strLocalFile.find("RebornLauncher.exe") != std::string::npos)
 		{
 #ifdef _DEBUG
 			continue;
 #else
-			// ¸Ä¸öÃû×Ö
+			// é€é€›é‡œéšå¶…ç“§
 			strLocalFile = "UpdateTemp.exe";
 			m_bUpdateSelf = true;
 #endif
 		}
 
-		// É¾³ı±¾µØÎÄ¼ş
+		// é’çŠ»æ«éˆî„€æ¹´é‚å›¦æ¬¢
 		// std::filesystem::remove(strLocalFile);
-		// È¡ÏûÎÄ¼şÖ»¶ÁÊôĞÔ
+		// é™æ ¨ç§·é‚å›¦æ¬¢é™î‡î‡°çç‚´â‚¬?
 		SetFileAttributesA(strLocalFile.c_str(), FILE_ATTRIBUTE_NORMAL);
 		DeleteFileA(strLocalFile.c_str());
 
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-		// ÏÂÔØĞÂÎÄ¼ş
+		// æ¶“å¬­æµ‡é‚ç‰ˆæƒæµ ?
 
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 		httplib::Progress progress([this](uint64_t current, uint64_t total)->bool {
@@ -495,14 +471,14 @@ int WorkThread::GetCurrentDownload() const
 
 std::wstring WorkThread::GetCurrentDownloadFile()
 {
-	// ×Ô¶¯Ëø
+	// é‘·î„å§©é–¿?
 	std::lock_guard<std::mutex> lock(m_mutex);
 	return m_strCurrentDownload;
 }
 
 void WorkThread::SetCurrentDownloadFile(const std::wstring& strFile)
 {
-	// ×Ô¶¯Ëø
+	// é‘·î„å§©é–¿?
 	std::lock_guard<std::mutex> lock(m_mutex);
 	m_strCurrentDownload = strFile;
 }
@@ -524,11 +500,11 @@ void WorkThread::DownloadBasePackage()
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	while (!DownloadWithResume(m_strPage + "MapleReborn.7z", "MapleReborn.7z"));
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// ½âÑ¹ÎÄ¼ş
+	// ç‘™ï½…å¸‡é‚å›¦æ¬¢
 	Extract7z("MapleReborn.7z", "./");
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
-	// É¾³ıÑ¹Ëõ°ü
+	// é’çŠ»æ«é˜å¬¬ç¼‰é–?
 	std::filesystem::remove("MapleReborn.7z");
 }
 
@@ -611,11 +587,11 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 		}
 
 		for (const auto& fileInfo : files) {
-			// ÒÆ¶¯µ½ÎÄ¼şÎ»ÖÃ
+			// ç»‰è¯²å§©é’ç‰ˆæƒæµ æœµç¶…ç¼ƒ?
 			while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
 				if (fileInfo.filePath == archive_entry_pathname(entry)) {
 					std::string outputPath = outPath + "/" + fileInfo.filePath;
-					// Èç¹ûÃ»ÓĞÄ¿Â¼ÏÈ´´½¨
+					// æ¿¡å‚›ç‰å¨Œâ„ƒæ¹é©î†¼ç¶éå å±å¯¤?
 					std::filesystem::path filePath = outputPath;
 					if (!std::filesystem::exists(filePath.parent_path()))
 					{
@@ -644,78 +620,99 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 	archive_read_free(a);
 }
 
-// ¶ÏµãĞø´« 
+// é‚î… å£ç¼î…ç´¶ 
 bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path) {
 
-	std::string strUrl = m_strPage + "MapleReborn.7z"; 
-	std::cout << __FILE__ << ":" << __LINE__ << "url:" << m_strUrl <<" " << "page:" << strUrl << std::endl;
-	SetCurrentDownloadFile(str2wstr(file_path, file_path.length()));
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+	std::string strUrl = url;
+	std::cout << __FILE__ << ":" << __LINE__ << " url:" << m_strUrl << " page:" << strUrl << std::endl;
+	SetCurrentDownloadFile(str2wstr(file_path, static_cast<int>(file_path.length())));
 
-	// ÇëÇóÎÄ¼ş×Ü´óĞ¡ ÓÃÏÂÔØ²¿·ÖÀ´´úÌæHEARÇëÇó
-	httplib::Result res;
+	if (m_client == nullptr) {
+		return false;
+	}
+
+	// ç’‡é”‹çœ°é‚å›¦æ¬¢é¬è¯²ã‡çå¿¥ç´™Range é‚ç‘°ç´¡é–¬å®å¤æ£°æ¿†î˜» HEADé”›?	httplib::Result res;
 	{
 		httplib::Headers headers;
 		headers.insert({ "Range", "bytes=0-0" });
 		res = m_client->Get(strUrl.c_str(), headers);
-		if (res && (res->status == 200 || res->status == 206 )) {
-			m_nCurrentDownloadSize = std::stoull(res.value().get_header_value("Content-Length"));
+		if (res && (res->status == 200 || res->status == 206)) {
+			m_nCurrentDownloadSize = static_cast<int>(std::stoull(res.value().get_header_value("Content-Length")));
 		}
 		else {
-			std::cout << "Failed to get file size with status code: " << res->status << std::endl;
-			return false;
+			std::cout << "Failed to get file size, status code: " << (res ? res->status : -1) << std::endl;
+			m_nCurrentDownloadSize = 0;
 		}
 	}
 
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// ¼ì²éÎÄ¼şÊÇ·ñÒÑ¾­²¿·ÖÏÂÔØ
-	std::ifstream existing_file(file_path, std::ios::binary | std::ios::ate);
+	// P2P æµ¼æ¨ºå›çæ¿Šç˜¯
+	{
+		P2PSettings settingsCopy;
+		{
+			std::lock_guard<std::mutex> lock(m_p2pMutex);
+			settingsCopy = m_p2pSettings;
+		}
+		if (settingsCopy.enabled && m_p2pClient) {
+			m_p2pClient->UpdateSettings(settingsCopy);
+			const bool p2pOk = m_p2pClient->TryDownload(strUrl, file_path, [this](uint64_t current, uint64_t total) {
+				m_nCurrentDownloadProgress = static_cast<int>(current);
+				m_nCurrentDownloadSize = static_cast<int>(total);
+			});
+			if (p2pOk) {
+				m_nCurrentDownloadProgress = m_nCurrentDownloadSize;
+				return true;
+			}
+		}
+	}
+
+	// å¦«â‚¬éŒãƒ¦æƒæµ èˆµæ§¸éšï¹€å‡¡ç¼å¿›å„´é’å—•ç¬…æ?	std::ifstream existing_file(file_path, std::ios::binary | std::ios::ate);
 	size_t existing_file_size = 0;
 	if (existing_file.is_open()) {
 		existing_file_size = existing_file.tellg();
 		existing_file.close();
 	}
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	if (existing_file_size == m_nCurrentDownloadSize)
-		return true;
-	else if (existing_file_size > m_nCurrentDownloadSize)
-	{
-		std::filesystem::remove(file_path);
-		existing_file_size = 0;
+	if (m_nCurrentDownloadSize > 0) {
+		if (existing_file_size == static_cast<size_t>(m_nCurrentDownloadSize)) {
+			return true;
+		}
+		else if (existing_file_size > static_cast<size_t>(m_nCurrentDownloadSize)) {
+			std::filesystem::remove(file_path);
+			existing_file_size = 0;
+		}
 	}
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
 	httplib::Headers headers;
 	if (existing_file_size > 0) {
-		// Ê¹ÓÃ Range ÇëÇóÍ·ÊµÏÖ¶ÏµãĞø´«
-		m_nCurrentDownloadProgress = existing_file_size;
+		// æµ£è·¨æ•¤ Range ç’‡é”‹çœ°æ¾¶æ‘ç–„éœç‰ˆæŸ‡éåœ­ç”»æµ¼?		m_nCurrentDownloadProgress = static_cast<int>(existing_file_size);
 		headers.insert({ "Range", "bytes=" + std::to_string(existing_file_size) + "-" + std::to_string(m_nCurrentDownloadSize) });
 		std::cout << "Resuming download from byte: " << existing_file_size << std::endl;
 	}
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// ´ò¿ªÎÄ¼ş£¬×·¼ÓĞ´Èë
-	std::ofstream file(file_path, std::ios::binary | std::ios::app);
-	// ·¢ÆğÏÂÔØÇëÇó
-	res = m_client->Get(url.c_str(), headers,[&](const char* data, size_t data_length) {
-		file.write(data, data_length);
+
+	// éµæ’³ç´‘é‚å›¦æ¬¢é”›å²ƒæ‹·é”çŠ²å•“é?	std::ofstream file(file_path, std::ios::binary | std::ios::app);
+	if (!file.is_open()) {
+		return false;
+	}
+
+	// é™æˆ£æ£æ¶“å¬­æµ‡ç’‡é”‹çœ°
+	res = m_client->Get(strUrl.c_str(), headers, [&](const char* data, size_t data_length) {
+		file.write(data, static_cast<std::streamsize>(data_length));
 		file.flush();
-		m_nCurrentDownloadProgress += data_length;
-		return true; // ·µ»Ø true ÒÔ¼ÌĞøÏÂÔØ
-	});
+		m_nCurrentDownloadProgress += static_cast<int>(data_length);
+		return true; // æ©æ–¿æ´– true æµ ãƒ§æˆ·ç¼î…ç¬…æ?	});
 	file.close();
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
 	if (res && res->status == 200) {
 		std::cout << "Download completed!" << std::endl;
 		return true;
 	}
-	else if (res && res->status == 206) {  // 206 Partial Content ×´Ì¬Âë±íÊ¾³É¹¦Ğø´«
+	else if (res && res->status == 206) {  // 206 Partial Content é˜èˆµâ‚¬ä½ºçˆœç›ã„§ãšé´æ„¬å§›ç¼î…ç´¶
 		std::cout << "Download resumed and completed!" << std::endl;
 		return true;
 	}
 	else {
-		std::cerr << "Download failed with status code: " << res->status << std::endl;
+		std::cerr << "Download failed with status code: " << (res ? res->status : -1) << std::endl;
 		return false;
 	}
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 }
 
 
@@ -725,17 +722,17 @@ void WorkThread::WriteDataToMapping()
 	for (auto& [strPage, config] : m_mapFiles)
 	{
 		std::string strMemoryName = strPage;
-		// É¾³ı "\"
+		// é’çŠ»æ« "\"
 		std::replace(strMemoryName.begin(), strMemoryName.end(), '\\', '_');
 		HANDLE hFileMapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, config.m_strMd5.length() + 1, strMemoryName.c_str());
 		if (hFileMapping)
 		{
-			// °ÑMD5Ğ´½øÈ¥
+			// é¶å¥™D5éæ¬’ç¹˜é˜?
 			LPVOID lpBaseAddress = MapViewOfFile(hFileMapping, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 			if (lpBaseAddress)
 			{
 				memcpy(lpBaseAddress, config.m_strMd5.c_str(), config.m_strMd5.length());
-				// Ìí¼ÓÖÕÖ¹·û
+				// å¨£è¯²å§ç¼å Ÿî„›ç»—?
 				((char*)lpBaseAddress)[config.m_strMd5.length()] = '\0';
 				UnmapViewOfFile(lpBaseAddress);
 			}
@@ -746,7 +743,7 @@ void WorkThread::WriteDataToMapping()
 
 void WorkThread::WebServiceThread()
 {
-	// ¼àÌıÍøÂçÇëÇó
+	// é©æˆæƒ‰ç¼ƒæˆ ç²¶ç’‡é”‹çœ°
 	httplib::Server svr;
 	svr.Get("/download", [this](const httplib::Request& req, httplib::Response& res) {
 		g_bRendering = true;
@@ -755,12 +752,12 @@ void WorkThread::WebServiceThread()
 		m_nCurrentDownload = 0;
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
 		std::string strPage = req.get_param_value("page");
-		std::cout << "ÇëÇóÏÂÔØÎÄ¼ş:" << strPage << std::endl;
+		std::cout << "ç’‡é”‹çœ°æ¶“å¬­æµ‡é‚å›¦æ¬¢:" << strPage << std::endl;
 		auto it = m_mapFiles.find(strPage);
 		SetCurrentDownloadFile(str2wstr(strPage,strPage.length()));
 		if (it != m_mapFiles.end())
 		{
-			std::cout << "¿ªÊ¼ÑéÖ¤ÎÄ¼şMD5:" << strPage << std::endl;
+			std::cout << "å¯®â‚¬æ¿®å¬®ç™ç’‡ä½¹æƒæµ ç¦¡D5:" << strPage << std::endl;
 			std::string strLocalFile = it->first;
 			bool Md5Same = false;
 			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
@@ -770,14 +767,14 @@ void WorkThread::WebServiceThread()
 
 			if (Md5Same)
 			{
-				std::cout << "ÎÄ¼şÒÑ´æÔÚÇÒMD5ÏàÍ¬" << std::endl;
+				std::cout << "é‚å›¦æ¬¢å®¸æ’ç“¨é¦ã„¤ç¬–MD5é©ç¨¿æ‚“" << std::endl;
 				res.status = 200;
 				res.set_content("OK", "text/plain");
 			}
 			else
 			{
-				std::cout << "¿ªÊ¼ÏÂÔØÎÄ¼ş:" << strLocalFile << std::endl;
-				// ÏÂÔØ
+				std::cout << "å¯®â‚¬æ¿®å¬©ç¬…æèŠ¥æƒæµ ?" << strLocalFile << std::endl;
+				// æ¶“å¬­æµ‡
 				strPage = m_strPage + "Update/" + std::to_string(it->second.m_qwTime) + "/" + strPage;
 				std::replace(strPage.begin(), strPage.end(), '\\', '/');
 				httplib::Progress progress([this](uint64_t current, uint64_t total)->bool {
@@ -789,35 +786,35 @@ void WorkThread::WebServiceThread()
 				if (ret && ret->status == 200)
 				{
 					// std::filesystem::create_directories(strLocalFile);
-					// ÌáÈ¡Ä¿Â¼
+					// é»æ„¬å½‡é©î†¼ç¶
 					// std::filesystem::path filePath = strLocalFile;
 					// std::filesystem::create_directories(filePath.parent_path());
-					std::cout << "ÏÂÔØÍê³É¿ªÊ¼±£´æ:" << strLocalFile << std::endl;
-					// ¹²Ïí¶ÁĞ´´ò¿ª
+					std::cout << "æ¶“å¬­æµ‡ç€¹å±¾åšå¯®â‚¬æ¿®å¬©ç¹šç€›?" << strLocalFile << std::endl;
+					// éå˜éŸ©ç’‡è¯²å•“éµæ’³ç´‘
 
 					std::ofstream ofs(strLocalFile, std::ios::binary);
-					// Èç¹ûĞ´ÈëÊ§°Ü´òÓ¡Ò»ÏÂ
+					// æ¿¡å‚›ç‰éæ¬å†æ¾¶è¾«è§¦éµæ’³åµƒæ¶“â‚¬æ¶“?
 					if (!ofs)
 					{
-						std::cout << "Ğ´ÈëÎÄ¼şÊ§°Ü:" << GetLastError() << std::endl;
+						std::cout << "éæ¬å†é‚å›¦æ¬¢æ¾¶è¾«è§¦:" << GetLastError() << std::endl;
 					}
 					ofs.write(ret->body.c_str(), ret->body.size());
 
 					ofs.close();
 					res.status = 200;
 					res.set_content("OK", "text/plain");
-					std::cout << strLocalFile  <<"Ğ´ÈëÎÄ¼ş³É¹¦" << std::endl;
+					std::cout << strLocalFile  <<"éæ¬å†é‚å›¦æ¬¢é´æ„¬å§›" << std::endl;
 				}
 				else
 				{
 					res.status = 404;
 					res.set_content("Not Found", "text/plain");
-					std::cout << "ÏÂÔØÎÄ¼şÊ§°Ü,×´Ì¬Âë:"<< ret->status << std::endl;
+					std::cout << "æ¶“å¬­æµ‡é‚å›¦æ¬¢æ¾¶è¾«è§¦,é˜èˆµâ‚¬ä½ºçˆœ:"<< ret->status << std::endl;
 				}
 			}
 		}
 		else {
-			std::cout << "·şÎñ¶Ë²»´æÔÚÕâ¸öÎÄ¼ş" << strPage << std::endl;
+			std::cout << "éˆå¶…å§Ÿç»”îˆ™ç¬‰ç€›æ¨ºæ¹ªæ©æ¬é‡œé‚å›¦æ¬¢" << strPage << std::endl;
 			res.status = 404;
 			res.set_content("404", "text/palin");
 		}
@@ -827,10 +824,10 @@ void WorkThread::WebServiceThread()
 
 	svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
 
-		std::cout << "µÇÂ¼Æ÷ÇëÇóÔËĞĞÓÎÏ·" << std::endl;
+		std::cout << "é§è¯²ç¶é£ã„¨î‡¬å§¹å‚ç¹ç›å±¾çˆ¶é´? << std::endl;
 
 		GetRemoteVersionFile();
-		// ÏÂÔØRunTimeÎÄ¼ş
+		// æ¶“å¬­æµ‡RunTimeé‚å›¦æ¬¢
 		DownloadRunTimeFile();
 
 		bool bRun = false;
@@ -838,12 +835,12 @@ void WorkThread::WebServiceThread()
 		{
 			if (m_dwGameProcessId[i] != 0 && IsProcessRunning(m_dwGameProcessId[i]))
 			{
-				std::cout << "½ø³Ì:" << m_dwGameProcessId[i] << "´æÔÚ" << std::endl;
+				std::cout << "æ©æ¶šâ–¼:" << m_dwGameProcessId[i] << "ç€›æ¨ºæ¹ª" << std::endl;
 				continue;
 			}
 			else
 			{
-				// Æô¶¯ÓÎÏ·
+				// éšîˆšå§©å¨“å‘Šå™
 				STARTUPINFO si = { sizeof(si) };
 				PROCESS_INFORMATION pi;
 				if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
@@ -851,7 +848,7 @@ void WorkThread::WebServiceThread()
 				}
 				m_hGameProcess[i] = pi.hProcess;
 				m_dwGameProcessId[i] = pi.dwProcessId;
-				// Ğ´ÈëPID
+				// éæ¬å†PID
 				TCHAR szPID[32] = { 0 };
 				_itow_s(pi.dwProcessId, szPID, 10);
 
@@ -869,7 +866,7 @@ void WorkThread::WebServiceThread()
 					CloseHandle(pi.hThread);
 				}
 
-				std::cout << "ÔËĞĞ³É¹¦" << std::endl;
+				std::cout << "æ©æ„¯î”‘é´æ„¬å§›" << std::endl;
 				res.status = 200;
 				res.set_content("OK", "text/plain");
 				bRun = true;
@@ -880,14 +877,14 @@ void WorkThread::WebServiceThread()
 		if (bRun == false)
 		{
 			res.status = 404;
-			res.set_content("Ò»´ÎÖ»ÄÜÆô¶¯Á½¸ö¿Í»§¶Ë,Ã»ÓĞÎ»ÖÃÀ²¡£", "text/plain");
+			res.set_content("æ¶“â‚¬å¨†â€³å½§é‘³è—‰æƒé”ã„¤è¢±æ¶“î„î…¹é´é£î¬,å¨Œâ„ƒæ¹æµ£å¶‡ç–†éŸï¸ºâ‚¬?, "text/plain");
 		}
 
 		PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
 		g_bRendering = false;
 	});
 
-	// ÖĞÖ¹ÇëÇó
+	// æ¶“î…Ÿî„›ç’‡é”‹çœ°
 	svr.Get("/Stop", [&svr,this](const httplib::Request& req, httplib::Response& res) {
 		for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
 		{
@@ -906,17 +903,30 @@ void WorkThread::WebServiceThread()
 	svr.listen("localhost", 12345);
 
 
-	std::cout << "Ïß³Ì»áÍêÂğ" << std::endl;
+	std::cout << "ç»¾è·¨â–¼æµ¼æ°¬ç•¬éš? << std::endl;
 }
 
 void WorkThread::Stop()
 {
-	// Í¨Öªsvr ½áÊøÁË
-	httplib::Client cli("localhost",12345);
+	// é–«æ°±ç…¡svr ç¼æ’´æ½«æµœ?	httplib::Client cli("localhost",12345);
 	cli.Get("/Stop");
 	m_bRun = FALSE;
-	m_client->stop();
-	m_client = nullptr;
+	if (m_client) {
+		m_client->stop();
+		m_client = nullptr;
+	}
+}
+
+void WorkThread::UpdateP2PSettings(const P2PSettings& settings)
+{
+	std::lock_guard<std::mutex> lock(m_p2pMutex);
+	m_p2pSettings = settings;
+}
+
+P2PSettings WorkThread::GetP2PSettings() const
+{
+	std::lock_guard<std::mutex> lock(m_p2pMutex);
+	return m_p2pSettings;
 }
 
 bool WorkThread::GetDownloadUrl()
@@ -933,7 +943,7 @@ bool WorkThread::GetDownloadUrl()
 		}
 	};
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// ÏÂÔØ¸üĞÂÎÄ¼şµÄµØÖ· 
+	// æ¶“å¬­æµ‡é‡å­˜æŸŠé‚å›¦æ¬¢é¨å‹«æ¹´é§â‚¬ 
 	httplib::Client cli{ "https://gitee.com" };
 	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
 	if (res && res->status == 200) {
@@ -943,18 +953,18 @@ bool WorkThread::GetDownloadUrl()
 			ciphertext += (char)strtol(hex, NULL, 16);
 		}
 		std::string strVersionDatUrl = DecryptUrl(ciphertext);
-		// »ñÈ¡³öÀ´µÄ¶«Î÷ ´ó¸Å³¤ÕâÑù https://vip.123pan.cn/1820268460/MapleStory
-		// °Ñ https://vip.123pan.cn ÕâÒ»½ØÌáÈ¡³öÀ´
+		// é‘¾å³°å½‡é‘çƒ˜æ½µé¨å‹ªç¬¢ç‘—?æ¾¶Ñ„î›§é—€èƒ¯ç¹–é?https://vip.123pan.cn/1820268460/MapleStory
+		// é¶?https://vip.123pan.cn æ©æ¬ç«´é´î…å½é™æ §åš­é‰?
 		ExtractUrlParts(strVersionDatUrl, m_strUrl, m_strPage);
 		m_strPage.push_back('/');
 		return true;
 	}
 	else {
 		if (res) {
-			std::cout << "»ñÈ¡ÏÂÔØµØÖ·Ê§°Ü ×´Ì¬Âë:" << res->status << std::endl;
+			std::cout << "é‘¾å³°å½‡æ¶“å¬­æµ‡é¦æ¿æ½ƒæ¾¶è¾«è§¦ é˜èˆµâ‚¬ä½ºçˆœ:" << res->status << std::endl;
 		}
 		else {
-			std::cout << "»ñÈ¡ÏÂÔØµØÖ·Ê§°Ü Î´ÖªµÄHTTP´íÎó:"<< res.error() << std::endl;
+			std::cout << "é‘¾å³°å½‡æ¶“å¬­æµ‡é¦æ¿æ½ƒæ¾¶è¾«è§¦ éˆî†ç…¡é¨å‡¥TTPé–¿æ¬’î‡¤:"<< res.error() << std::endl;
 		}
 	}
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
@@ -966,23 +976,23 @@ bool WorkThread::GetRemoteVersionFile()
 	auto res = m_client->Get(m_strPage + "Version.dat");
 	if (res && res->status == 200) {
 		const std::string strVersionDatContent = DecryptVersionDat(res->body);
-		// ÕâÊÇÒ»¸öÒÔÉÏ½á¹¹µÄJSONÄÚÈİ
+		// æ©æ¬æ§¸æ¶“â‚¬æ¶“îƒäº’æ¶“å©„ç²¨é‹å‹­æ®‘JSONéå‘­î†
 		Json::Value root;
 		Json::Reader reader;
 		if (reader.parse(strVersionDatContent, root)) {
-			// »ñÈ¡Ô¶³ÌµÄMD5
+			// é‘¾å³°å½‡æ©æ»…â–¼é¨å‡ªD5
 			std::string strRemoteVersionDatMd5 = FileHash::string_md5(res->body);
-			// »ñÈ¡°æ±¾ºÅ
+			// é‘¾å³°å½‡é—å Ÿæ¹°é™?
 			if (strRemoteVersionDatMd5 != m_strLocalVersionMD5)
 			{
-				// ±£´æµ½±¾µØ
+				// æ·‡æ¿†ç“¨é’ç‰ˆæ¹°é¦?
 				std::ofstream ofs("Version.dat", std::ios::binary);
 				ofs.write(res->body.data(), res->body.size());
 				ofs.close();
 
 				m_qwVersion = root["time"].asInt64();
 				m_mapFiles.clear();
-				// »ñÈ¡ÎÄ¼şĞÅÏ¢
+				// é‘¾å³°å½‡é‚å›¦æ¬¢æ·‡â„ƒä¼…
 				Json::Value filesJson = root["file"];
 				for (auto& fileJson : filesJson) {
 					VersionConfig config;
@@ -991,16 +1001,16 @@ bool WorkThread::GetRemoteVersionFile()
 					config.m_qwSize = fileJson["size"].asInt64();
 					config.m_strPage = fileJson["page"].asString();
 					m_mapFiles[config.m_strPage] = config;
-					// ÌáÈ¡Ä¿Â¼ É¾³ıÎÄ¼şÃû
+					// é»æ„¬å½‡é©î†¼ç¶ é’çŠ»æ«é‚å›¦æ¬¢éš?
 					std::filesystem::path filePath = config.m_strPage;
 					std::string strPath = filePath.parent_path().string();
-					// ÅĞ¶ÏÄ¿Â¼ÊÇ·ñ´æÔÚ£¬²»´æÔÚ´´½¨
+					// é’ã‚†æŸ‡é©î†¼ç¶é„îˆšæƒç€›æ¨ºæ¹ªé”›å±¼ç¬‰ç€›æ¨ºæ¹ªé’æ¶˜ç¼“
 					if (!strPath.empty() && !std::filesystem::exists(strPath))
 					{
 						std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
 					}
 
-					// ÅĞ¶ÏÎÄ¼şÊÇ·ñ´æÔÚ£¬²»´æÔÚ´´½¨Ò»¸ö¿ÕµÄ
+					// é’ã‚†æŸ‡é‚å›¦æ¬¢é„îˆšæƒç€›æ¨ºæ¹ªé”›å±¼ç¬‰ç€›æ¨ºæ¹ªé’æ¶˜ç¼“æ¶“â‚¬æ¶“î†â”–é¨?
 					if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
 					{
 						std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
@@ -1010,7 +1020,7 @@ bool WorkThread::GetRemoteVersionFile()
 
 				m_vecRunTimeList.clear();
 
-				// »ñÈ¡ runtime ÎÄ¼şÁĞ±í
+				// é‘¾å³°å½‡ runtime é‚å›¦æ¬¢é’æ¥„ã€ƒ
 				Json::Value downloadList = root["runtime"];
 				for (auto& download : downloadList) {
 					m_vecRunTimeList.push_back(download.asString());

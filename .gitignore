@@ -34,3 +34,5 @@
 _builds/
 vcpkg_installed/
 x64/
+/_builds_tmp
+/bin/Debug

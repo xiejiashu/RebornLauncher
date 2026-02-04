@@ -20,13 +20,13 @@ public:
 	void SetOwner(Sprite* Owner);
 private:
 	std::vector<const Gdiplus::Bitmap*> m_bitmapFrame;
-	// 切换速度
+	// 閸掑洦宕查柅鐔峰
 	int m_switchSpeed;
-	// 上次切换的时间
+	// 娑撳﹥顐奸崚鍥ㄥ床閻ㄥ嫭妞傞梻?
 	DWORD m_lastSwitchTime;
-	// 当前帧
+	// 瑜版挸澧犵敮?
 	int m_currentFrame;
-	// 是否循环
+	// 閺勵垰鎯佸顏嗗箚
 	bool m_loop;
 
 	Sprite* m_Owner;

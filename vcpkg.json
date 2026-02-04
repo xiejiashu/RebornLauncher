@@ -7,9 +7,11 @@
 		"cryptopp",
 		"gtest",
 		"jsoncpp",
-		"sqlitecpp",
-		"zstd",
-		"openssl",
-		"libarchive"
-	]
+        "sqlitecpp",
+        "zstd",
+        "openssl",
+        "libarchive",
+        "detours",
+        "libdatachannel"
+    ]
 }

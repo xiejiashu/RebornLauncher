@@ -1,28 +1,28 @@
 #pragma once
 #include <functional>
 
-// µ±Ç°ÏÔÊ¾×´Ì¬
+// è¤°æ’³å¢ é„å‰§ãšé˜èˆµâ‚¬?
 enum class SpriteState
 {
-	// Õ¾Á¢
+	// ç»”æ¬‘ç›
 	Stand,
 	Move,
-	// ÌøÔ¾
+	// ç’ºå® ç©¬
 	Jump,
 	// max
 	Max,
 };
 
-// ·½Ïò
+// é‚ç‘°æ‚œ
 enum class SpriteDirection
 {
-	// Ïò×ó
+	// éšæˆä¹
 	Left,
-	// ÏòÓÒ
+	// éšæˆå½¸
 	Right,
-	// ÏòÉÏ
+	// éšæˆœç¬‚
 	Up,
-	// ÏòÏÂ
+	// éšæˆœç¬…
 	Down,
 
 	Max
@@ -39,17 +39,17 @@ public:
 	virtual void Update(DWORD currentTime);
 	virtual void Draw(Gdiplus::Graphics& graphics);
 public:
-	// ×óÒÆ
+	// å®¸ï¸¾Ğ©
 	void MoveLeft();
-	// ÓÒÒÆ
+	// é™å´‡Ğ©
 	void MoveRight();
-	// ÉÏÒÆ
+	// æ¶“å©„Ğ©
 	void MoveUp();
-	// ÏÂÒÆ
+	// æ¶“å¬¬Ğ©
 	void MoveDown();
-	// Í£Ö¹ÒÆ¶¯
+	// é‹æ»„î„›ç»‰è¯²å§©
 	void StopMove();
-	// ÌøÔ¾
+	// ç’ºå® ç©¬
 	void Jump();
 
 	// Setter Getter
@@ -65,26 +65,26 @@ public:
 	void SetBitmapFrame(SpriteState state, Frame* frame);
 	Frame* GetBitmapFrame(SpriteState state) const;
 private:
-	// ÌøÔ¾¸ß¶È
+	// ç’ºå® ç©¬æ¥‚æ¨ºå®³
 	int m_jumpHeight;
-	// ÌøÔ¾ËÙ¶È
+	// ç’ºå® ç©¬é–«ç†·å®³
 	int m_jumpSpeed;
-	// ÌøÔ¾ÉÏÉıÏÂ½µµÄ¼ÓËÙ¶È
+	// ç’ºå® ç©¬æ¶“å©‚å´Œæ¶“å¬®æª·é¨å‹«å§é–«ç†·å®³
 	int m_jumpAcceleration;
-	// ÒÆ¶¯ËÙ¶È
+	// ç»‰è¯²å§©é–«ç†·å®³
 	int m_moveSpeed;
-	// ±£´æÉÏ´ÎµÄÒÆ¶¯ËÙ¶È
+	// æ·‡æ¿†ç“¨æ¶“å©ƒî‚¼é¨å‹­Ğ©é”ã„©â‚¬ç†·å®³
 	int m_lastMoveSpeed;
-	// ÉÏ´ÎÒÆ¶¯µÄÊ±¼ä
+	// æ¶“å©ƒî‚¼ç»‰è¯²å§©é¨å‹¬æ¤‚é—‚?
 	DWORD m_lastMoveTime;
-	// ÉÏ´ÎÌøÔ¾µÄÊ±¼ä
+	// æ¶“å©ƒî‚¼ç’ºå® ç©¬é¨å‹¬æ¤‚é—‚?
 	DWORD m_lastJumpTime;
 
-	// Ö¡
+	// ç”¯?
 	Frame* m_bitmapFrame[static_cast<int>(SpriteState::Max)];
 	
-	// µ±Ç°ÏÔÊ¾×´Ì¬
+	// è¤°æ’³å¢ é„å‰§ãšé˜èˆµâ‚¬?
 	SpriteState m_state;
-	// µ±Ç°·½Ïò
+	// è¤°æ’³å¢ é‚ç‘°æ‚œ
 	SpriteDirection m_direction;
 };

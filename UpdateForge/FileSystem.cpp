@@ -1,4 +1,4 @@
-﻿#include "FileSystem.h"
+#include "FileSystem.h"
 
 using namespace std;
 using namespace std::filesystem;

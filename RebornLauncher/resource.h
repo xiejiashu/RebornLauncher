@@ -1,6 +1,6 @@
-﻿//{{NO_DEPENDENCIES}}
-// Microsoft Visual C++ 生成的包含文件。
-// 供 RebornLauncher.rc 使用
+//{{NO_DEPENDENCIES}}
+// Microsoft Visual C++ 鐢熸垚鐨勫寘鍚枃浠躲€?
+// 渚?RebornLauncher.rc 浣跨敤
 //
 #define IDC_MYICON                      2
 #define IDD_REBORNLAUNCHER_DIALOG       102

@@ -34,7 +34,7 @@ Sprite::~Sprite()
 
 void Sprite::Update(DWORD currentTime)
 {
-	// ¼ÆËãÏÂµ±Ç°µÄÎ»ÖÃ
+	// ç’ï¼„ç•»æ¶“å¬ªç¶‹é“å¶‡æ®‘æµ£å¶‡ç–†
 	if (m_state == SpriteState::Move)
 	{
 		DWORD deltaTime = currentTime - m_lastMoveTime;
@@ -44,7 +44,7 @@ void Sprite::Update(DWORD currentTime)
 	else if (m_state == SpriteState::Jump)
 	{
 		DWORD deltaTime = currentTime - m_lastJumpTime;
-		// ¼ÆËãµ±Ç°µÄ¸ß¶È
+		// ç’ï¼„ç•»è¤°æ’³å¢ é¨å‹¯ç®æ´?
 		SetY(GetY() - (m_jumpSpeed * deltaTime / 1000 - m_jumpAcceleration * deltaTime / 1000 * deltaTime / 1000 / 2));
 		m_jumpSpeed -= m_jumpAcceleration * deltaTime / 1000;
 		if (GetY() >= 0)
@@ -71,28 +71,28 @@ void Sprite::Draw(Graphics& graphics)
 		const Bitmap* bitmap = frame->GetBitmap();
 		if (bitmap)
 		{
-			// Ä¬ÈÏÏòÓÒ,Èç¹ûÏò×ó, Ôò·­×ªÎÆÀí
+			// æ¦›æ¨¿î…»éšæˆå½¸,æ¿¡å‚›ç‰éšæˆä¹, é’æ¬‘ç‚•æî„‚æ±—é?
 			if (m_direction == SpriteDirection::Left)
 			{
-				// ·­×ªÎÆÀí
+				// ç¼ˆæ˜æµ†ç»¾åœ­æ‚Š
 				Gdiplus::Matrix matrix;
 				matrix.Translate((GetX() + GetWidth()) * 1.f, GetY() * 1.f);
 				matrix.Scale(-1, 1);
 				graphics.SetTransform(&matrix);
 			}
-			// Èç¹ûÏòÉÏ, ÔòĞı×ªÎÆÀí
+			// æ¿¡å‚›ç‰éšæˆœç¬‚, é’æ¬æ£†æî„‚æ±—é?
 			else if (m_direction == SpriteDirection::Up)
 			{
-				// Ğı×ªÎÆÀí
+				// éƒå¬­æµ†ç»¾åœ­æ‚Š
 				Gdiplus::Matrix matrix;
 				matrix.Translate(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f);
 				matrix.RotateAt(270.f, PointF(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f));
 				graphics.SetTransform(&matrix);
 			}
-			// Èç¹ûÏòÏÂ
+			// æ¿¡å‚›ç‰éšæˆœç¬…
 			else if (m_direction == SpriteDirection::Down)
 			{
-				// Ğı×ªÎÆÀí
+				// éƒå¬­æµ†ç»¾åœ­æ‚Š
 				Gdiplus::Matrix matrix;
 				matrix.Translate(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f);
 				matrix.RotateAt(90.f, PointF(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f));
@@ -131,7 +131,7 @@ void Sprite::MoveDown()
 void Sprite::StopMove()
 {
 	m_state = SpriteState::Stand;
-	// ËÙ¶È±ä 0 
+	// é–«ç†·å®³é™?0 
 	m_lastMoveSpeed = m_moveSpeed;
 	m_moveSpeed = 0;
 }

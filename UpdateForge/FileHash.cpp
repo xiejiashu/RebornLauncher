@@ -1,5 +1,6 @@
 #include "FileHash.h"
 
+#define CRYPTOPP_ENABLE_NAMESPACE_WEAK 1
 #include <cryptopp/md5.h>
 #include <cryptopp/hex.h>
 #include <cryptopp/files.h>
@@ -11,13 +12,13 @@
 //
 //	auto filter = new CryptoPP::HashFilter(md5, new CryptoPP::HexEncoder(new CryptoPP::StringSink(dst)));
 //	// auto string_source = CryptoPP::StringSource(str, true, filter);
-//	
+//
 //	return dst;
 //}
 
 std::string FileHash::file_md5(std::wstring const& filename)
 {
-	CryptoPP::MD5 md5;
+	CryptoPP::Weak::MD5 md5;
 	std::string dst;
 
 	auto filter = new CryptoPP::HashFilter(md5, new CryptoPP::HexEncoder(new CryptoPP::StringSink(dst)));

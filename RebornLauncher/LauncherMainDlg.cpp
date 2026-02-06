@@ -5,7 +5,6 @@
 
 void LauncherMainDlg::Create(HWND hParentWnd)
 {
-	// 鍒涘缓涓€涓獥鍙?
 	m_hWnd = CreateDialog(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_DLG_MAIN), hParentWnd, (DLGPROC)LauncherMainDlg::DlgProc);
 	ShowWindow(m_hWnd, SW_SHOW);
 	UpdateWindow(m_hWnd);
@@ -15,23 +14,20 @@ void LauncherMainDlg::Create(HWND hParentWnd)
 
 void LauncherMainDlg::CreateStatusBar()
 {
-	// 鍒涘缓鐘舵€佹潯鍦ㄧ獥鍙ｄ笂
 	m_hStatus = CreateWindowEx(0, STATUSCLASSNAME, NULL, WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 		0, 0, 0, 0, m_hWnd, NULL, GetModuleHandle(NULL), NULL);
-	// 缁欑姸鎬佹潯娣诲姞涓€涓爣绛剧敤浠ヨ鏄庯紝 娣诲姞涓€涓鐞嗘枃浠舵暟閲忔枃瀛?姣斿 1/1000 娣诲姞涓€涓€昏繘搴︽潯 鍒濆鍊间负0 鏈€澶?100锛屾坊鍔犱竴涓繘搴︽潯鏌ョ湅姝ｅ湪涓嬭浇鐨勬枃浠惰繘搴?
 	int parts[] = { 200, 300, 500, -1 };
 	SendMessage(m_hStatus, SB_SETPARTS, 4, (LPARAM)parts);
-	SendMessage(m_hStatus, SB_SETTEXT, 0, (LPARAM)L"姝ｅ湪妫€鏌ユ洿鏂?..");
+	SendMessage(m_hStatus, SB_SETTEXT, 0, (LPARAM)L"正在检查更新... / Checking for updates...");
 	SendMessage(m_hStatus, SB_SETTEXT, 1, (LPARAM)L"1/1000");
-	// 鏉＄姸鐨勯偅绉嶈繘搴︽潯
 	RECT rc;
-	SendMessage(m_hStatus, SB_GETRECT, 2, (LPARAM)&rc); // 鑾峰彇绗?涓儴鍒嗙殑鐭╁舰鍖哄煙
+	SendMessage(m_hStatus, SB_GETRECT, 2, (LPARAM)&rc);
 	m_hProgressTotal = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
 		rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, m_hStatus, NULL, GetModuleHandle(NULL), NULL);
 	SendMessage(m_hProgressTotal, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 	SendMessage(m_hProgressTotal, PBM_SETPOS, 0, 0);
 
-	SendMessage(m_hStatus, SB_GETRECT, 3, (LPARAM)&rc); // 鑾峰彇绗?涓儴鍒嗙殑鐭╁舰鍖哄煙
+	SendMessage(m_hStatus, SB_GETRECT, 3, (LPARAM)&rc);
 
 	m_hProgressCurrent = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
 		rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, m_hStatus, NULL, GetModuleHandle(NULL), NULL);
@@ -54,14 +50,12 @@ LRESULT LauncherMainDlg::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 	{
 	case WM_INITDIALOG:
 	{
-		// 璁剧疆绐楀彛鏍囬
 		SetWindowText(hWnd, L"Reborn Launcher");
 		return TRUE;
 	}
 	case WM_COMMAND:
 	{
 		int wmId = LOWORD(wParam);
-		// 鍒嗘瀽鑿滃崟閫夋嫨:
 		switch (wmId)
 		{
 		case IDM_ABOUT:
@@ -75,7 +69,6 @@ LRESULT LauncherMainDlg::DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM 
 			return DefWindowProc(hWnd, message, wParam, lParam);
 		}
 	}
-	// 鍙充笂瑙掔殑鍙?
 	case WM_DESTROY:
 	{
 		PostQuitMessage(0);

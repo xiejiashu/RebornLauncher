@@ -1,4 +1,4 @@
-// RebornLauncher.cpp : 瀹氫箟搴旂敤绋嬪簭鐨勫叆鍙ｇ偣銆?
+// RebornLauncher main entry and UI logic / RebornLauncher 主入口与界面逻辑
 //
 
 #include "framework.h"
@@ -21,6 +21,9 @@
 #include <shellapi.h>
 #include <cwchar>
 
+#undef min
+#undef max
+
 #include "WorkThread.h"
 #include "Encoding.h"
 #include "P2PClient.h"
@@ -31,12 +34,12 @@
 
 #define MAX_LOADSTRING 100
 
-// 鍏ㄥ眬鍙橀噺:
-HINSTANCE hInst;                                // 褰撳墠瀹炰緥
-WCHAR szTitle[MAX_LOADSTRING];                  // 鏍囬鏍忔枃鏈?
-WCHAR szWindowClass[MAX_LOADSTRING];            // 涓荤獥鍙ｇ被鍚?
+// Global process/window state / 全局进程与窗口状态
+HINSTANCE hInst;
+WCHAR szTitle[MAX_LOADSTRING];
+WCHAR szWindowClass[MAX_LOADSTRING];
 
-// 姝や唬鐮佹ā鍧椾腑鍖呭惈鐨勫嚱鏁扮殑鍓嶅悜澹版槑:
+// Forward declarations / 前置声明
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -47,19 +50,19 @@ HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
 NOTIFYICONDATA nid{};
 
-// 绐楀彛褰撳墠浣嶇疆
+// Last saved window position / 记录窗口位置
 POINT g_ptWindow = { 360, 180 };
-// 绐楀彛澶у皬
-constexpr SIZE g_szWindow = { 860, 520 };
+// Default launcher size / 默认启动器尺寸
+constexpr SIZE g_szWindow = { 980, 620 };
 
-// 褰撳墠鏂囦欢妯″潡璺緞鍖呭惈鏂囦欢鍚?
+// Full path of current module / 当前模块完整路径
 std::wstring g_strCurrentModulePath;
-// 褰撳墠exe鐨勫悕瀛?
+// Current executable filename / 当前可执行文件名
 std::wstring g_strCurrentExeName;
-// 褰撳墠璺緞锛屼笉鍖呭惈鏂囦欢鍚?
+// Working directory / 工作目录
 std::wstring g_strWorkPath;
 
-// 娓叉煋寮€鍏筹紙鎵樼洏鍙鏍囪锛?
+// Rendering visibility flag / 渲染可见性标记
 bool g_bRendering = true;
 
 struct UiHandles {
@@ -68,6 +71,7 @@ struct UiHandles {
 	HWND stunEdit{ nullptr };
 	HWND addStunBtn{ nullptr };
 	HWND statusText{ nullptr };
+	HWND stunTitle{ nullptr };
 	HWND fileLabel{ nullptr };
 	HWND totalLabel{ nullptr };
 	HWND totalProgress{ nullptr };
@@ -79,11 +83,11 @@ P2PSettings g_p2pSettings;
 WorkThread* g_workThreadPtr = nullptr;
 constexpr const wchar_t* kStunListFile = L"p2p_stun_servers.txt";
 
-// 鍒犻櫎鎵樼洏鍥炬爣
+// Remove tray icon safely / 安全移除托盘图标
 void DeleteTrayIcon() {
 	Shell_NotifyIcon(NIM_DELETE, &nid);
 	DestroyIcon(nid.hIcon);
-	// 鍒犻櫎鎵樼洏鍥炬爣
+	// Reset rendering flag when tray icon is removed.
     g_bRendering = true;
 }
 
@@ -99,7 +103,7 @@ void RestoreFromTray(HWND hWnd) {
     DeleteTrayIcon();
 	SetForegroundWindow(hWnd);
     g_bRendering = true;
-	// 瑙ｉ櫎绐楀彛閫忔槑
+	// Legacy layered-window path retained for fallback.
 	// SetLayeredWindowAttributes(hWnd, RGB(0, 0, 0), 255, LWA_ALPHA);
 }
 
@@ -179,7 +183,10 @@ void ApplyP2PSettings() {
 	}
 
 	if (g_ui.statusText) {
-		SetWindowText(g_ui.statusText, g_p2pSettings.enabled ? L"P2P 宸插惎鐢?(WebRTC)" : L"P2P 宸插叧闂?);
+		const wchar_t* status = g_p2pSettings.enabled
+			? L"P2P状态: 已启用(WebRTC) / P2P: enabled (WebRTC)"
+			: L"P2P状态: 已禁用 / P2P: disabled";
+		SetWindowTextW(g_ui.statusText, status);
 	}
 
 	if (g_workThreadPtr) {
@@ -192,7 +199,7 @@ void AddStunServerFromEdit() {
 		return;
 	}
 	wchar_t buffer[256]{};
-	GetWindowText(g_ui.stunEdit, buffer, static_cast<int>(std::size(buffer)));
+	GetWindowTextW(g_ui.stunEdit, buffer, static_cast<int>(std::size(buffer)));
 	std::wstring value = Trim(buffer);
 	if (value.empty()) {
 		return;
@@ -206,7 +213,7 @@ void AddStunServerFromEdit() {
 	RefreshStunListUI();
 	SaveStunServers();
 	ApplyP2PSettings();
-	SetWindowText(g_ui.stunEdit, L"");
+	SetWindowTextW(g_ui.stunEdit, L"");
 }
 
 void RemoveSelectedStunServer() {
@@ -222,54 +229,106 @@ void RemoveSelectedStunServer() {
 	}
 }
 
+void LayoutMainControls(HWND hWnd) {
+	RECT rc{};
+	GetClientRect(hWnd, &rc);
+	const int clientW = rc.right - rc.left;
+	const int clientH = rc.bottom - rc.top;
+
+	const int margin = 16;
+	const int gap = 24;
+	const int leftW = (std::max)(320, clientW / 2 - gap);
+	const int rightX = margin + leftW + gap;
+	const int rightW = (std::max)(260, clientW - rightX - margin);
+
+	int y = margin;
+	MoveWindow(g_ui.statusText, margin, y, leftW, 24, TRUE);
+
+	y += 28;
+	MoveWindow(g_ui.checkP2P, margin, y, leftW, 24, TRUE);
+
+	y += 32;
+	MoveWindow(g_ui.stunTitle, margin, y, leftW, 20, TRUE);
+
+	y += 20;
+	const int editH = 24;
+	const int addBtnW = 90;
+	const int bottomY = clientH - margin - editH;
+	const int listH = (std::max)(90, bottomY - 8 - y);
+	MoveWindow(g_ui.stunList, margin, y, leftW, listH, TRUE);
+	MoveWindow(g_ui.stunEdit, margin, bottomY, leftW - addBtnW - 8, editH, TRUE);
+	MoveWindow(g_ui.addStunBtn, margin + leftW - addBtnW, bottomY, addBtnW, editH, TRUE);
+
+	int ry = margin;
+	MoveWindow(g_ui.totalLabel, rightX, ry, rightW, 20, TRUE);
+	ry += 24;
+	MoveWindow(g_ui.totalProgress, rightX, ry, rightW, 24, TRUE);
+	ry += 38;
+	MoveWindow(g_ui.fileLabel, rightX, ry, rightW, 20, TRUE);
+	ry += 24;
+	MoveWindow(g_ui.fileProgress, rightX, ry, rightW, 24, TRUE);
+}
+
 void CreateMainControls(HWND hWnd) {
 	const int margin = 16;
-	const int columnWidth = 300;
+	const int columnWidth = 320;
 	int y = margin;
 
-	g_ui.statusText = CreateWindowEx(0, L"STATIC", L"涓嬭浇妯″紡", WS_CHILD | WS_VISIBLE,
+	g_ui.statusText = CreateWindowExW(
+		0, L"STATIC", L"状态: 就绪 / Status: Ready", WS_CHILD | WS_VISIBLE,
 		margin, y, columnWidth, 24, hWnd, nullptr, hInst, nullptr);
 
 	y += 28;
-	g_ui.checkP2P = CreateWindowEx(0, L"BUTTON", L"鍚敤 P2P (WebRTC)", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+	g_ui.checkP2P = CreateWindowExW(
+		0, L"BUTTON", L"启用P2P / Enable P2P", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
 		margin, y, columnWidth, 24, hWnd, reinterpret_cast<HMENU>(ID_CHECK_P2P), hInst, nullptr);
 
 	y += 32;
-	CreateWindowEx(0, L"STATIC", L"STUN 鏈嶅姟鍣?, WS_CHILD | WS_VISIBLE,
+	g_ui.stunTitle = CreateWindowExW(
+		0, L"STATIC", L"STUN服务器(双击删除) / STUN Servers", WS_CHILD | WS_VISIBLE,
 		margin, y, columnWidth, 20, hWnd, nullptr, hInst, nullptr);
 
 	y += 20;
-	g_ui.stunList = CreateWindowEx(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
+	g_ui.stunList = CreateWindowExW(
+		WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
 		WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL,
-		margin, y, columnWidth, 140, hWnd, reinterpret_cast<HMENU>(ID_STUN_LIST), hInst, nullptr);
+		margin, y, columnWidth, 150, hWnd, reinterpret_cast<HMENU>(ID_STUN_LIST), hInst, nullptr);
 
-	y += 150;
-	g_ui.stunEdit = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", nullptr,
+	y += 160;
+	g_ui.stunEdit = CreateWindowExW(
+		WS_EX_CLIENTEDGE, L"EDIT", nullptr,
 		WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
 		margin, y, columnWidth - 110, 24, hWnd, reinterpret_cast<HMENU>(ID_STUN_EDIT), hInst, nullptr);
 
-	g_ui.addStunBtn = CreateWindowEx(0, L"BUTTON", L"娣诲姞 STUN", WS_CHILD | WS_VISIBLE,
+	g_ui.addStunBtn = CreateWindowExW(
+		0, L"BUTTON", L"添加 / Add", WS_CHILD | WS_VISIBLE,
 		margin + columnWidth - 100, y, 100, 24, hWnd, reinterpret_cast<HMENU>(ID_STUN_ADD), hInst, nullptr);
 
 	const int rightX = margin + columnWidth + 40;
 	int ry = margin;
-	g_ui.totalLabel = CreateWindowEx(0, L"STATIC", L"鎬昏繘搴?, WS_CHILD | WS_VISIBLE,
-		rightX, ry, 200, 20, hWnd, nullptr, hInst, nullptr);
+	g_ui.totalLabel = CreateWindowExW(
+		0, L"STATIC", L"总进度 / Total: 0/0", WS_CHILD | WS_VISIBLE,
+		rightX, ry, 220, 20, hWnd, nullptr, hInst, nullptr);
 	ry += 24;
-	g_ui.totalProgress = CreateWindowEx(0, PROGRESS_CLASS, nullptr,
+	g_ui.totalProgress = CreateWindowExW(
+		0, PROGRESS_CLASS, nullptr,
 		WS_CHILD | WS_VISIBLE, rightX, ry, 420, 22, hWnd, nullptr, hInst, nullptr);
 	SendMessage(g_ui.totalProgress, PBM_SETRANGE32, 0, 100);
 
 	ry += 36;
-	g_ui.fileLabel = CreateWindowEx(0, L"STATIC", L"褰撳墠鏂囦欢: 鏃?, WS_CHILD | WS_VISIBLE,
+	g_ui.fileLabel = CreateWindowExW(
+		0, L"STATIC", L"当前文件 / File: idle", WS_CHILD | WS_VISIBLE,
 		rightX, ry, 420, 20, hWnd, nullptr, hInst, nullptr);
 	ry += 24;
-	g_ui.fileProgress = CreateWindowEx(0, PROGRESS_CLASS, nullptr,
+	g_ui.fileProgress = CreateWindowExW(
+		0, PROGRESS_CLASS, nullptr,
 		WS_CHILD | WS_VISIBLE, rightX, ry, 420, 22, hWnd, nullptr, hInst, nullptr);
 	SendMessage(g_ui.fileProgress, PBM_SETRANGE32, 0, 100);
+
+	LayoutMainControls(hWnd);
 }
 
-void UpdateProgressUi(const WorkThread& workThread) {
+void UpdateProgressUi(WorkThread& workThread) {
 	if (!g_ui.totalProgress || !g_ui.fileProgress) {
 		return;
 	}
@@ -286,27 +345,24 @@ void UpdateProgressUi(const WorkThread& workThread) {
 
 	std::wstring fileName = workThread.GetCurrentDownloadFile();
 	if (fileName.empty()) {
-		fileName = L"褰撳墠鏂囦欢: 鏃?;
+		fileName = L"当前文件 / File: idle";
 	}
 	else {
-		fileName = L"褰撳墠鏂囦欢: " + fileName + L" " + std::to_wstring(fileProgress) + L"/" + std::to_wstring(std::max(1, fileSize));
+		fileName = L"当前文件 / File: " + fileName + L" " + std::to_wstring(fileProgress) + L"/" + std::to_wstring(std::max(1, fileSize));
 	}
 	if (g_ui.fileLabel) {
-		SetWindowText(g_ui.fileLabel, fileName.c_str());
+		SetWindowTextW(g_ui.fileLabel, fileName.c_str());
 	}
 
-	std::wstring totalText = L"鎬昏繘搴? " + std::to_wstring(currentCount) + L"/" + std::to_wstring(std::max(1, totalCount));
+	std::wstring totalText = L"总进度 / Total: " + std::to_wstring(currentCount) + L"/" + std::to_wstring(std::max(1, totalCount));
 	if (g_ui.totalLabel) {
-		SetWindowText(g_ui.totalLabel, totalText.c_str());
+		SetWindowTextW(g_ui.totalLabel, totalText.c_str());
 	}
 }
-
-// 鍒涘缓鍥炬爣
 void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath,const LPCTSTR lpFileName) {
     IShellLink* pShellLink = NULL;
     HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (LPVOID*)&pShellLink);
     if (SUCCEEDED(hr)) {
-        // 鍚堝嚭涓€涓柊璺緞
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetPath, lpFileName);
         pShellLink->SetPath(newPath);
@@ -358,38 +414,35 @@ bool IsProcessRunning(const TCHAR* exePath) {
 void MoveToDirectory(LPCTSTR lpTargetDir) {
     // TCHAR currentPath[MAX_PATH];
     // GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
-    // 鎻愬彇鏂囦欢鍚?
 	// TCHAR* FileName = PathFindFileName(g_strCurrentModulePath.c_str());
     TCHAR newPath[MAX_PATH];
     swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
-    // 娓呮竻闄ゆ枃浠剁殑鍙灞炴€?
 	SetFileAttributes(newPath, FILE_ATTRIBUTE_NORMAL);
-    
-	// 鍏堟竻闄ゆ棫鏂囦欢
+
     if (!DeleteFile(newPath))
     {
-		std::wcout <<__FILEW__<<":"<<__LINE__<<TEXT( "鍒犻櫎澶辫触:") << newPath << TEXT("err:")<<GetLastError()<<std::endl;
+		std::wcout << __FILEW__ << ":" << __LINE__
+			<< TEXT("删除失败 / Delete failed: ") << newPath
+			<< TEXT(" err:") << GetLastError() << std::endl;
     }
     if (!CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE))
     {
-        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath << TEXT("绉诲姩澶辫触:") << newPath << TEXT("err:") << GetLastError() << std::endl;
+        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath
+            << TEXT(" 复制失败 / Copy failed: ") << newPath << TEXT(" err:") << GetLastError() << std::endl;
     }
 
-    // 璁剧疆娓告垙鐩綍鍐欓厤缃」
 	WriteProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir);
 }
 
 bool IsInMapleRebornDir() {
-    // 鑾峰彇褰撳墠妯″潡鐨勬枃浠惰矾寰?
     // TCHAR filePath[MAX_PATH];
     // GetModuleFileName(NULL, filePath, MAX_PATH);
 
-    // 鑾峰彇鏂囦欢鍚?
     // TCHAR* fileName = PathFindFileName(filePath);
 
     std::cout << "2222222222222222222222222222" << std::endl;
 	std::wstring str = g_strCurrentModulePath.c_str();
-	if (str.find(TEXT("MapleReborn")) != std::string::npos 
+	if (str.find(TEXT("MapleReborn")) != std::string::npos
         || str.find(TEXT("RebornV")) != std::string::npos)
     {
         std::cout << "aaa" << std::endl;
@@ -397,16 +450,14 @@ bool IsInMapleRebornDir() {
         return true;
     }
 
-    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << TEXT("澶辫触") << TEXT(":") << __LINE__ << TEXT(" ") << str << std::endl;
+    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__
+        << TEXT(" 失败 / failed:") << __LINE__ << TEXT(" ") << str << std::endl;
 
-    //// 鍘绘帀鏂囦欢鍚嶏紝淇濈暀鐩綍璺緞
     //*fileName = '\0';
     //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
-    //// 鑾峰彇鐖剁洰褰曞悕
     //PathRemoveBackslash(filePath);
     //PathRemoveFileSpec(filePath);
     //MessageBox(NULL, filePath, TEXT("err"), MB_OK);
-    //// 妫€鏌ョ埗鐩綍鍚嶆槸鍚︿负 "MapleReborn"
     //TCHAR* folderName = PathFindFileName(filePath);
     //MessageBox(NULL, folderName, TEXT("err"), MB_OK);
     return false;
@@ -432,18 +483,16 @@ bool IsProcessRunning(DWORD dwProcessId) {
 }
 
 void InitTrayIcon(HWND hWnd) {
-    // 璁剧疆鎵樼洏鍥炬爣鏁版嵁
     nid.cbSize = sizeof(NOTIFYICONDATA);
     nid.hWnd = hWnd;
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(IDI_REBORNLAUNCHER)); // 浣跨敤浣犵殑鍥炬爣璧勬簮
+    nid.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(IDI_REBORNLAUNCHER));
 	if (!nid.hIcon){
         std::cout << "LoadIcon failed errcode:" << GetLastError() << ":"<< g_hInstance << std::endl;
 	}
-    lstrcpy(nid.szTip, L"鏋彾閲嶇敓");
-    // 娣诲姞鎵樼洏鍥炬爣
+    lstrcpy(nid.szTip, L"重生启动器 / RebornLauncher");
     Shell_NotifyIcon(NIM_ADD, &nid);
 }
 
@@ -452,19 +501,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_ LPWSTR    lpCmdLine,
                      _In_ int       nCmdShow)
 {
-
-
-
-
-
-
-
-
-
-
-
-
-
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
@@ -479,9 +515,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 //#ifndef _DEBUG
 //	std::wofstream outLog(g_strCurrentExeName + TEXT(".log"));
-//    // 淇濆瓨鍘熷鐨勭紦鍐插尯鎸囬拡
 //    std::wstreambuf* originalCoutBuffer = std::wcout.rdbuf();
-//    // 灏?std::cout 鐨勭紦鍐插尯鎸囬拡閲嶅畾鍚戝埌鏂囦欢
 //    std::wcout.rdbuf(outLog.rdbuf());
 //
 //	std::ofstream outLogA("Launcher.log");
@@ -492,16 +526,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	DWORD dwPID = GetProfileInt(TEXT("MapleReborn"), TEXT("pid"),0);
     if (dwPID)
     {
-        // 鏌ョ湅杩涚▼鏄惁娲荤潃
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
         if (IsProcessRunning(dwPID))
         {
-            // 鍒ゆ柇杩涚▼鏄惁娲荤潃鐨?
 			//DWORD dwExitCode = 0;
    //         DWORD dwResult = WaitForSingleObject(hProcess, 0);
    //         if (dwResult != WAIT_TIMEOUT)
    //         {
-   //             // 杩涚▼杩樻椿鐫€
    //             CloseHandle(hProcess);
 
 
@@ -510,24 +541,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             auto res = cli.Get("/RunClient");
             if (res && res->status == 200)
             {
-                // 鍚姩鎴愬姛
+                // success
             }
             else
             {
-				MessageBox(NULL, TEXT("鏈€澶氬彧鑳藉惎鍔?涓鎴风"), TEXT("err"), MB_OK);
-                // 鍚姩澶辫触
+                MessageBox(NULL, TEXT("最多仅可同时运行 2 个客户端。 / Only up to 2 clients can run at the same time."), TEXT("错误 / Error"), MB_OK);
             }
             return 0;
         }
     }
 
-    // 鎶婂綋鍓峆ID鍐欏叆
 	DWORD dwCurrentPID = GetCurrentProcessId();
     TCHAR szPID[32] = { 0 };
 	_itow_s(dwCurrentPID, szPID, 10);
 	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), szPID);
 
-    // 缁撴潫 MapleReborn 涓嬬殑 Client1PID,Client2PID
 	DWORD dwClient1PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client1PID"), 0);
 	DWORD dwClient2PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client2PID"), 0);
 	if (dwClient1PID)
@@ -556,14 +584,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     freopen_s(&stream, "CONOUT$", "w", stdout); //CONOUT$
 #endif
 
-    // TODO: 鍦ㄦ澶勬斁缃唬鐮併€?
-    // 璋冪敤GDI+搴撳噯澶?
 
     // MessageBox(NULL, TEXT("0000000000000000"), TEXT("err"), MB_OK);
     std::wcout << TEXT("Start:") << lpCmdLine << std::endl;
 
 
-    // 妗岀湅褰撳墠鏄笉鏄湪妗岄潰锛屾垨鏄湪C鐩樼洰褰曚笅 濡傛灉鏄闈紝灏辨妸鑷繁绉诲埌D鐩?娌℃湁D鐩樺氨E鐩橈紝渚濇鈥︹€?濡傛灉閮芥病鏈夛紝灏辩Щ鍒癈:\MapleReborn 鐩綍涓嬮潰銆?
     HRESULT hr = CoInitialize(NULL);
 	if (FAILED(hr)) {
 		return -1;
@@ -577,7 +602,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn ");
         const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
         for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-            // 鍒涘缓鐩綍
 			CreateDirectory(dirs[i], NULL);
 			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
 				// MoveToDirectory(dirs[i]);
@@ -586,16 +610,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			}
 		}
 
-        // 璇诲彇娓告垙鐩綍
         TCHAR szGamePath[MAX_PATH] = { 0 };
         GetProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
         MoveToDirectory(szGamePath);
 
         // MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
 
-		// 鍒涘缓妗岄潰蹇嵎鏂瑰紡
 		TCHAR shortcutPath[MAX_PATH];
-        // 鑾峰彇妗岄潰璺緞
 		LPITEMIDLIST pidlDesktop;
 		HRESULT hr = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
 		if (FAILED(hr)) {
@@ -604,15 +625,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		}
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
 		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
-        // 鑾峰彇褰撳墠妯″潡鐨勫悕瀛?
 		// TCHAR currentPath[MAX_PATH];
 		// GetModuleFileName(hInstance, currentPath, MAX_PATH);
-        // 鎶婂悕瀛楁彁鍙栧嚭鏉ユ嫾锛屾妸璺緞鍘绘帀
 		// TCHAR* fileName = PathFindFileName(g_strCurrentModulePath.c_str());
 		CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
         // MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
 
-        // 鏌ョ湅鐩爣杩涚▼鏄惁宸插惎鍔紝宸插惎鍔ㄥ氨涓嶅啀鍒涘缓
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
         if (!IsProcessRunning(newPath)) {
@@ -626,17 +644,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         if (lpCmdLine)
         {
-            // 鍙栨秷鏂囦欢鍙灞炴€?
 			SetFileAttributes(lpCmdLine, FILE_ATTRIBUTE_NORMAL);
             DeleteFile(lpCmdLine);
 
-            // 濡傛灉褰撳墠鏂囦欢鍚嶄笉鏄?RebornLauncher.exe 閭ｅ鍒跺嚭涓€涓?RebornLauncher.exe
 			if (g_strCurrentExeName != TEXT("RebornLauncher.exe"))
 			{
 				TCHAR newPath[MAX_PATH];
 				swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
 				CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
-				// 鍚姩鏂扮殑杩涚▼
 				ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
                 WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
 				ExitProcess(0);
@@ -645,13 +660,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 #endif
 
-    // 鍒濆鍖栧叏灞€瀛楃涓?    LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
     std::cout << "77777777777777" << std::endl;
 
 
-    // 鎵ц搴旂敤绋嬪簭鍒濆鍖?
     if (!InitInstance (hInstance, true))
     {
         std::cout << "888888888888" << std::endl;
@@ -667,7 +680,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     MSG msg;
 
-    // 涓绘秷鎭惊鐜?
     bool running = true;
     while (running)
     {
@@ -692,9 +704,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         Sleep(15);
     }
 
-    std::cout << "璇锋眰涓" << std::endl;
+    std::cout << "请求终止 / Request stopped" << std::endl;
     workThread.Stop();
-	// 鎶婇厤缃」鐨勮繘绋婭D娓呯┖
 	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
 	g_workThreadPtr = nullptr;
 
@@ -704,10 +715,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     return (int) msg.wParam;
 }
 
-//
-//  鍑芥暟: MyRegisterClass()
-//
-//  鐩爣: 娉ㄥ唽绐楀彛绫汇€?
 //
 ATOM MyRegisterClass(HINSTANCE hInstance)
 {
@@ -730,24 +737,16 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
-//
-//   鍑芥暟: InitInstance(HINSTANCE, int)
-//
-//   鐩爣: 淇濆瓨瀹炰緥鍙ユ焺骞跺垱寤轰富绐楀彛
-//
-//   娉ㄩ噴:
-//
-//        鍦ㄦ鍑芥暟涓紝鎴戜滑鍦ㄥ叏灞€鍙橀噺涓繚瀛樺疄渚嬪彞鏌勫苟
-//        鍒涘缓鍜屾樉绀轰富绋嬪簭绐楀彛銆?
-//
+// Init app instance and create the main window.
+// 初始化应用实例并创建主窗口。
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
-   hInst = hInstance; // 灏嗗疄渚嬪彞鏌勫瓨鍌ㄥ湪鍏ㄥ眬鍙橀噺涓?
+   hInst = hInstance;
    INITCOMMONCONTROLSEX icc{ sizeof(INITCOMMONCONTROLSEX), ICC_PROGRESS_CLASS };
    InitCommonControlsEx(&icc);
 
-   HWND hWnd = CreateWindowExW(0, szWindowClass, L"鏋彾閲嶇敓",
-       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+   HWND hWnd = CreateWindowExW(0, szWindowClass, L"重生启动器 / RebornLauncher",
+       WS_OVERLAPPEDWINDOW,
        g_ptWindow.x, g_ptWindow.y,g_szWindow.cx,g_szWindow.cy, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWnd)
@@ -767,16 +766,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    return TRUE;
 }
 
-//
-//  鍑芥暟: WndProc(HWND, UINT, WPARAM, LPARAM)
-//
-//  鐩爣: 澶勭悊涓荤獥鍙ｇ殑娑堟伅銆?
-//
-//  WM_COMMAND  - 澶勭悊搴旂敤绋嬪簭鑿滃崟
-//  WM_PAINT    - 缁樺埗涓荤獥鍙?
-//  WM_DESTROY  - 鍙戦€侀€€鍑烘秷鎭苟杩斿洖
-//
-//
+// Main window procedure / 主窗口消息处理。
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -788,14 +778,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		ApplyP2PSettings();
 		break;
 	}
+	case WM_GETMINMAXINFO:
+	{
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		mmi->ptMinTrackSize.x = 900;
+		mmi->ptMinTrackSize.y = 560;
+		return 0;
+	}
+	case WM_SIZE:
+		if (wParam != SIZE_MINIMIZED) {
+			LayoutMainControls(hWnd);
+		}
+		break;
     case WM_TRAYICON:
-		// 鍙抽敭鑿滃崟
+		// Show tray context menu on right click.
 		if (lParam == WM_RBUTTONDOWN)
 		{
 			POINT pt;
 			GetCursorPos(&pt);
 			HMENU hMenu = CreatePopupMenu();
-			AppendMenu(hMenu, MF_STRING, IDM_EXIT, L"Exit");
+			AppendMenu(hMenu, MF_STRING, IDM_EXIT, L"退出 / Exit");
 			TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
 			DestroyMenu(hMenu);
 
@@ -845,7 +847,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_MOVE:
     {
-        // 鑾峰彇绐楀彛褰撳墠浣嶇疆
+        // Persist current window position.
         g_ptWindow.x = LOWORD(lParam);
         g_ptWindow.y = HIWORD(lParam);
         break;

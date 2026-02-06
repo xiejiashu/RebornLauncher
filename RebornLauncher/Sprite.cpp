@@ -34,7 +34,6 @@ Sprite::~Sprite()
 
 void Sprite::Update(DWORD currentTime)
 {
-	// 璁＄畻涓嬪綋鍓嶇殑浣嶇疆
 	if (m_state == SpriteState::Move)
 	{
 		DWORD deltaTime = currentTime - m_lastMoveTime;
@@ -44,7 +43,6 @@ void Sprite::Update(DWORD currentTime)
 	else if (m_state == SpriteState::Jump)
 	{
 		DWORD deltaTime = currentTime - m_lastJumpTime;
-		// 璁＄畻褰撳墠鐨勯珮搴?
 		SetY(GetY() - (m_jumpSpeed * deltaTime / 1000 - m_jumpAcceleration * deltaTime / 1000 * deltaTime / 1000 / 2));
 		m_jumpSpeed -= m_jumpAcceleration * deltaTime / 1000;
 		if (GetY() >= 0)
@@ -71,28 +69,22 @@ void Sprite::Draw(Graphics& graphics)
 		const Bitmap* bitmap = frame->GetBitmap();
 		if (bitmap)
 		{
-			// 榛樿鍚戝彸,濡傛灉鍚戝乏, 鍒欑炕杞汗鐞?
 			if (m_direction == SpriteDirection::Left)
 			{
-				// 缈昏浆绾圭悊
 				Gdiplus::Matrix matrix;
 				matrix.Translate((GetX() + GetWidth()) * 1.f, GetY() * 1.f);
 				matrix.Scale(-1, 1);
 				graphics.SetTransform(&matrix);
 			}
-			// 濡傛灉鍚戜笂, 鍒欐棆杞汗鐞?
 			else if (m_direction == SpriteDirection::Up)
 			{
-				// 鏃嬭浆绾圭悊
 				Gdiplus::Matrix matrix;
 				matrix.Translate(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f);
 				matrix.RotateAt(270.f, PointF(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f));
 				graphics.SetTransform(&matrix);
 			}
-			// 濡傛灉鍚戜笅
 			else if (m_direction == SpriteDirection::Down)
 			{
-				// 鏃嬭浆绾圭悊
 				Gdiplus::Matrix matrix;
 				matrix.Translate(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f);
 				matrix.RotateAt(90.f, PointF(GetX() + GetWidth() / 2.f, GetY() + GetHeight() / 2.f));
@@ -131,7 +123,6 @@ void Sprite::MoveDown()
 void Sprite::StopMove()
 {
 	m_state = SpriteState::Stand;
-	// 閫熷害鍙?0 
 	m_lastMoveSpeed = m_moveSpeed;
 	m_moveSpeed = 0;
 }

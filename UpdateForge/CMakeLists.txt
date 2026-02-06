@@ -13,7 +13,6 @@ target_compile_definitions(
 		_WINDOWS
 		_UNICODE
 )
-target_link_libraries(UpdateForge cryptopp::cryptopp JsonCpp::JsonCpp)
+target_link_libraries(UpdateForge cryptopp::cryptopp JsonCpp::JsonCpp comctl32)
 set_property(TARGET UpdateForge PROPERTY
-  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  
+	MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

@@ -1,6 +1,7 @@
 // Microsoft Visual C++ generated resource script.
 //
 #include "resource.h"
+#pragma code_page(65001)
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////
@@ -30,7 +31,7 @@ LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-IDI_REBORNLAUNCHER      ICON                    "G:\\MapleStoryStudio\\RebornLauncher\\RebornLauncher\\logo.ico"
+IDI_REBORNLAUNCHER      ICON                    "logo.ico"
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -40,16 +41,15 @@ IDI_REBORNLAUNCHER      ICON                    "G:\\MapleStoryStudio\\RebornLau
 
 IDC_REBORNLAUNCHER MENU
 BEGIN
-    POPUP "鏂囦欢(&F)"
+    POPUP "&File"
     BEGIN
-        MENUITEM "閫€鍑?&X)",                      IDM_EXIT
+        MENUITEM "E&xit",                      IDM_EXIT
     END
-    POPUP "甯姪(&H)"
+    POPUP "&Help"
     BEGIN
-        MENUITEM "鍏充簬(&A) ...",                  IDM_ABOUT
+        MENUITEM "&About ...",                 IDM_ABOUT
     END
 END
-
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -70,18 +70,18 @@ END
 
 IDD_ABOUTBOX DIALOGEX 0, 0, 170, 62
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "鍏充簬 RebornLauncher"
+CAPTION "About RebornLauncher"
 FONT 9, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
     ICON            IDI_REBORNLAUNCHER,IDC_STATIC,14,14,21,20
-    LTEXT           "RebornLauncher, 鐗堟湰 1.0",IDC_STATIC,42,14,114,8,SS_NOPREFIX
-    LTEXT           "鐗堟潈鎵€鏈?c) 2024",IDC_STATIC,42,26,114,8
-    DEFPUSHBUTTON   "纭畾",IDOK,113,41,50,14,WS_GROUP
+    LTEXT           "RebornLauncher, Version 1.0",IDC_STATIC,42,14,114,8,SS_NOPREFIX
+    LTEXT           "Copyright (c) 2024",IDC_STATIC,42,26,114,8
+    DEFPUSHBUTTON   "OK",IDOK,113,41,50,14,WS_GROUP
 END
 
 IDD_DLG_MAIN DIALOGEX 0, 0, 329, 324
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "鏋彾閲嶇敓"
+CAPTION "RebornLauncher"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
 END

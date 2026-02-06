@@ -18,14 +18,28 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 # set(CMAKE_MFC_FLAG 1)
 # minizip
 # unofficial-minizip CONFIG REQUIRED
-# 鏀寔Win7浠ヤ笅
-# 璁╂墍鏈夊簱鏀寔win7浠ヤ笅缂栬瘧
 
 set(CMAKE_TOOLCHAIN_FILE "G:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE PATH "vcpkg toolchain file")
-set(VCPKG_INSTALLED_DIR "G:/vcpkg/installed/x86-windows")
+set(VCPKG_INSTALLED_DIR "${PROJECT_SOURCE_DIR}/vcpkg_installed")
+set(VCPKG_MANIFEST_MODE OFF CACHE BOOL "Use classic vcpkg mode with preinstalled packages")
 
 find_package(zstd CONFIG REQUIRED)
-find_package(detours CONFIG REQUIRED)
+
+# detours port in vcpkg does not ship a CMake config; fall back to manual locate.
+find_package(detours CONFIG QUIET)
+if (NOT detours_FOUND)
+    find_path(DETOURS_INCLUDE_DIR detours/detours.h)
+    find_library(DETOURS_LIBRARY detours)
+    if (DETOURS_INCLUDE_DIR AND DETOURS_LIBRARY)
+        add_library(detours::detours UNKNOWN IMPORTED)
+        set_target_properties(detours::detours PROPERTIES
+            IMPORTED_LOCATION "${DETOURS_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${DETOURS_INCLUDE_DIR}")
+        set(detours_FOUND TRUE)
+    else()
+        message(FATAL_ERROR "detours not found; install via vcpkg or set DETOURS_INCLUDE_DIR / DETOURS_LIBRARY")
+    endif()
+endif()
 
 add_subdirectory(CryptoLoader)
 add_subdirectory(RebornLauncher)

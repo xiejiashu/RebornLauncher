@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include "Encoding.h"
@@ -18,6 +19,70 @@
 #pragma comment(lib, "advapi32.lib")
 extern bool g_bRendering;
 extern bool IsProcessRunning(DWORD dwProcessId);
+
+namespace {
+
+std::string NormalizeRelativeUrlPath(std::string path) {
+	std::replace(path.begin(), path.end(), '\\', '/');
+	if (path.empty()) {
+		return {};
+	}
+	if (path.front() != '/') {
+		path.insert(path.begin(), '/');
+	}
+	return path;
+}
+
+std::string JoinUrlPath(const std::string& basePath, const std::string& childPath) {
+	std::string base = basePath;
+	std::string child = childPath;
+	std::replace(base.begin(), base.end(), '\\', '/');
+	std::replace(child.begin(), child.end(), '\\', '/');
+
+	if (base.empty()) {
+		return NormalizeRelativeUrlPath(child);
+	}
+	if (base.front() != '/') {
+		base.insert(base.begin(), '/');
+	}
+	if (!base.empty() && base.back() != '/') {
+		base.push_back('/');
+	}
+	while (!child.empty() && child.front() == '/') {
+		child.erase(child.begin());
+	}
+	return base + child;
+}
+
+std::string BuildSignalEndpoint(const std::string& baseUrl, const std::string& pagePath) {
+	return baseUrl + JoinUrlPath(pagePath, "signal");
+}
+
+uint64_t ParseTotalSizeFromResponse(const httplib::Response& response) {
+	const std::string contentRange = response.get_header_value("Content-Range");
+	if (!contentRange.empty()) {
+		const size_t slash = contentRange.rfind('/');
+		if (slash != std::string::npos && slash + 1 < contentRange.size()) {
+			try {
+				return static_cast<uint64_t>(std::stoull(contentRange.substr(slash + 1)));
+			}
+			catch (...) {
+			}
+		}
+	}
+
+	const std::string contentLength = response.get_header_value("Content-Length");
+	if (!contentLength.empty()) {
+		try {
+			return static_cast<uint64_t>(std::stoull(contentLength));
+		}
+		catch (...) {
+		}
+	}
+	return 0;
+}
+
+} // namespace
 
 void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::string& data) {
 	HANDLE hFile = CreateFile(
@@ -130,7 +195,7 @@ DWORD WorkThread::Run()
 	{
 		std::lock_guard<std::mutex> lock(m_p2pMutex);
 		if (m_p2pSettings.signalEndpoint.empty()) {
-			m_p2pSettings.signalEndpoint = m_strUrl + "/signal";
+			m_p2pSettings.signalEndpoint = BuildSignalEndpoint(m_strUrl, m_strPage);
 		}
 		if (m_p2pClient) {
 			m_p2pClient->UpdateSettings(m_p2pSettings);
@@ -364,8 +429,8 @@ void WorkThread::DownloadRunTimeFile()
 	for (auto& download : m_vecRunTimeList)
 	{
 		std::string strLocalFile = download;
-		std::string strPage = m_strPage + "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download;
-		std::replace(strPage.begin(), strPage.end(), '\\', '/');
+		const std::string strPage = JoinUrlPath(
+			m_strPage, "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download);
 
 		std::cout <<__FUNCTION__<<":" << strPage << std::endl;
 		SetCurrentDownloadFile(str2wstr(strLocalFile, strLocalFile.length()));
@@ -405,14 +470,8 @@ void WorkThread::DownloadRunTimeFile()
 		SetFileAttributesA(strLocalFile.c_str(), FILE_ATTRIBUTE_NORMAL);
 		DeleteFileA(strLocalFile.c_str());
 
-		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-		// Download the file (no streaming progress in this build of httplib)
-		auto res = m_client->Get(strPage);
-		std::cout << __FILE__ << ":" << __LINE__ << strPage << std::endl;
-		if (res && res->status == 200) {
-			std::ofstream ofs(strLocalFile, std::ios::binary);
-			ofs.write(res->body.c_str(), res->body.size());
-			ofs.close();
+		if (!DownloadWithResume(strPage, strLocalFile)) {
+			std::cout << "Download failed for runtime file / 运行时文件下载失败: " << strPage << std::endl;
 		}
 		m_nCurrentDownload += 1;
 	}
@@ -457,11 +516,11 @@ void WorkThread::DownloadBasePackage()
 	m_nTotalDownload = 1;
 	m_nCurrentDownload = 0;
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	while (!DownloadWithResume(m_strPage + "MapleReborn.7z", "MapleReborn.7z"));
+	const std::string strBasePackagePath = JoinUrlPath(m_strPage, "MapleReborn.7z");
+	while (!DownloadWithResume(strBasePackagePath, "MapleReborn.7z"));
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	Extract7z("MapleReborn.7z", "./");
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-
 	std::filesystem::remove("MapleReborn.7z");
 }
 
@@ -577,9 +636,39 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 
 bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path) {
 
-	std::string strUrl = url;
+	std::string strUrl = NormalizeRelativeUrlPath(url);
 	std::cout << __FILE__ << ":" << __LINE__ << " url:" << m_strUrl << " page:" << strUrl << std::endl;
 	SetCurrentDownloadFile(str2wstr(file_path, static_cast<int>(file_path.length())));
+
+	{
+		P2PSettings settingsCopy;
+		{
+			std::lock_guard<std::mutex> lock(m_p2pMutex);
+			settingsCopy = m_p2pSettings;
+		}
+		if (settingsCopy.enabled && m_p2pClient) {
+			m_p2pClient->UpdateSettings(settingsCopy);
+			const bool p2pOk = m_p2pClient->TryDownload(strUrl, file_path, [this](uint64_t current, uint64_t total) {
+				m_nCurrentDownloadProgress = static_cast<int>(current);
+				if (total > 0) {
+					m_nCurrentDownloadSize = static_cast<int>(total);
+				}
+			});
+			if (p2pOk) {
+				if (m_nCurrentDownloadSize <= 0) {
+					std::error_code ec;
+					const auto size = std::filesystem::file_size(file_path, ec);
+					if (!ec) {
+						m_nCurrentDownloadSize = static_cast<int>(size);
+					}
+				}
+				m_nCurrentDownloadProgress = m_nCurrentDownloadSize > 0
+					? m_nCurrentDownloadSize
+					: m_nCurrentDownloadProgress;
+				return true;
+			}
+		}
+	}
 
 	if (m_client == nullptr) {
 		return false;
@@ -592,30 +681,11 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		headers.insert({ "Range", "bytes=0-0" });
 		res = m_client->Get(strUrl.c_str(), headers);
 		if (res && (res->status == 200 || res->status == 206)) {
-			m_nCurrentDownloadSize = static_cast<int>(std::stoull(res.value().get_header_value("Content-Length")));
+			m_nCurrentDownloadSize = static_cast<int>(ParseTotalSizeFromResponse(*res));
 		}
 		else {
 			std::cout << "Failed to get file size, status code: " << (res ? res->status : -1) << std::endl;
 			m_nCurrentDownloadSize = 0;
-		}
-	}
-
-	{
-		P2PSettings settingsCopy;
-		{
-			std::lock_guard<std::mutex> lock(m_p2pMutex);
-			settingsCopy = m_p2pSettings;
-		}
-		if (settingsCopy.enabled && m_p2pClient) {
-			m_p2pClient->UpdateSettings(settingsCopy);
-			const bool p2pOk = m_p2pClient->TryDownload(strUrl, file_path, [this](uint64_t current, uint64_t total) {
-				m_nCurrentDownloadProgress = static_cast<int>(current);
-				m_nCurrentDownloadSize = static_cast<int>(total);
-			});
-			if (p2pOk) {
-				m_nCurrentDownloadProgress = m_nCurrentDownloadSize;
-				return true;
-			}
 		}
 	}
 
@@ -863,7 +933,8 @@ bool WorkThread::GetDownloadUrl()
 
 bool WorkThread::GetRemoteVersionFile()
 {
-	auto res = m_client->Get(m_strPage + "Version.dat");
+	const std::string strVersionDatPath = JoinUrlPath(m_strPage, "Version.dat");
+	auto res = m_client->Get(strVersionDatPath);
 	if (res && res->status == 200) {
 		const std::string strVersionDatContent = DecryptVersionDat(res->body);
 		Json::Value root;
@@ -911,4 +982,3 @@ bool WorkThread::GetRemoteVersionFile()
 	}
 	return true;
 }
-

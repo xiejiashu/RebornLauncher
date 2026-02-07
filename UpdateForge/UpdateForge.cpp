@@ -10,6 +10,7 @@
 
 #include <shobjidl.h>
 #include <commctrl.h>
+#include <wincrypt.h>
 
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@
 #include <fstream>
 #include <cwctype>
 #include <algorithm>
+#include <cstring>
 
 using namespace std;
 namespace fs = std::filesystem;
@@ -30,6 +32,10 @@ namespace fs = std::filesystem;
 constexpr UINT WM_APP_LOG = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
 constexpr UINT WM_APP_PROGRESS = WM_APP + 3;
+constexpr INT_PTR IDC_BTN_BROWSE = 1001;
+constexpr INT_PTR IDC_CHK_ENCRYPT = 1002;
+constexpr INT_PTR IDC_BTN_GENERATE = 1003;
+constexpr INT_PTR IDC_BTN_URL_ENCRYPT = 1004;
 
 struct ProgressPayload
 {
@@ -59,6 +65,101 @@ static std::string NarrowACP(const std::wstring& w)
     std::string out(len, '\0');
     WideCharToMultiByte(CP_ACP, 0, w.c_str(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
     return out;
+}
+
+static std::string WideToUtf8(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static std::string BytesToHexLower(const std::string& bytes)
+{
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2);
+    for (unsigned char ch : bytes)
+    {
+        out.push_back(kHex[ch >> 4]);
+        out.push_back(kHex[ch & 0x0F]);
+    }
+    return out;
+}
+
+static bool EncryptLauncherUrlToHex(const std::string& plain, std::string& hexOut, std::wstring& errorOut)
+{
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    HCRYPTKEY hKey = 0;
+    auto cleanup = [&]() {
+        if (hKey) CryptDestroyKey(hKey);
+        if (hHash) CryptDestroyHash(hHash);
+        if (hProv) CryptReleaseContext(hProv, 0);
+    };
+
+    if (!CryptAcquireContext(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+    {
+        errorOut = L"CryptAcquireContext failed";
+        cleanup();
+        return false;
+    }
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash))
+    {
+        errorOut = L"CryptCreateHash failed";
+        cleanup();
+        return false;
+    }
+
+    constexpr char kUrlKey[] = "cDds!ErF9sIe6u$B";
+    if (!CryptHashData(hHash, reinterpret_cast<const BYTE*>(kUrlKey), static_cast<DWORD>(strlen(kUrlKey)), 0))
+    {
+        errorOut = L"CryptHashData failed";
+        cleanup();
+        return false;
+    }
+    if (!CryptDeriveKey(hProv, CALG_AES_256, hHash, 0, &hKey))
+    {
+        errorOut = L"CryptDeriveKey failed";
+        cleanup();
+        return false;
+    }
+
+    DWORD dataLen = static_cast<DWORD>(plain.size());
+    DWORD bufferLen = dataLen + 32;
+    std::string buffer(bufferLen, '\0');
+    if (dataLen > 0)
+    {
+        memcpy(buffer.data(), plain.data(), dataLen);
+    }
+
+    if (!CryptEncrypt(hKey, 0, TRUE, 0, reinterpret_cast<BYTE*>(buffer.data()), &dataLen, bufferLen))
+    {
+        errorOut = L"CryptEncrypt failed";
+        cleanup();
+        return false;
+    }
+
+    cleanup();
+    buffer.resize(dataLen);
+    hexOut = BytesToHexLower(buffer);
+    return true;
+}
+
+static std::wstring GetSettingsIniPath()
+{
+    wchar_t modulePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+    std::wstring path = modulePath;
+    const size_t pos = path.find_last_of(L"\\/");
+    if (pos != std::wstring::npos)
+    {
+        path.resize(pos + 1);
+    }
+    path.append(L"UpdateForge.settings.ini");
+    return path;
 }
 
 static std::wstring PickFolder(HWND owner)
@@ -155,15 +256,23 @@ void UpdateForgeApp::InitWindow(int nCmdShow)
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = UpdateForgeApp::WndProc;
     wc.hInstance = m_hInst;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 
     RegisterClassExW(&wc);
 
+    const std::wstring iniPath = GetSettingsIniPath();
+    int winWidth = static_cast<int>(GetPrivateProfileIntW(L"ui", L"window_width", 760, iniPath.c_str()));
+    int winHeight = static_cast<int>(GetPrivateProfileIntW(L"ui", L"window_height", 540, iniPath.c_str()));
+    winWidth = (std::max)(760, winWidth);
+    winHeight = (std::max)(540, winHeight);
+
     m_hWnd = CreateWindowExW(0, CLASS_NAME, L"更新构建器 / UpdateForge Version Builder", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 760, 540, nullptr, nullptr, m_hInst, this);
+        CW_USEDEFAULT, CW_USEDEFAULT, winWidth, winHeight, nullptr, nullptr, m_hInst, this);
 
     CreateControls();
 
@@ -180,15 +289,25 @@ void UpdateForgeApp::CreateControls()
     m_editPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         x + 95, y - 2, 420, 24, m_hWnd, nullptr, m_hInst, nullptr);
     m_btnBrowse = CreateWindowExW(0, L"BUTTON", L"浏览/Browse", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        x + 525, y - 2, 90, 24, m_hWnd, reinterpret_cast<HMENU>(1), m_hInst, nullptr);
+        x + 525, y - 2, 90, 24, m_hWnd, reinterpret_cast<HMENU>(IDC_BTN_BROWSE), m_hInst, nullptr);
     y += 36;
     m_lblKey = CreateWindowExW(0, L"STATIC", L"密钥/Key:", WS_CHILD | WS_VISIBLE, x, y, 90, 20, m_hWnd, nullptr, m_hInst, nullptr);
     m_editKey = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
         x + 95, y - 2, 220, 24, m_hWnd, nullptr, m_hInst, nullptr);
     m_chkEncrypt = CreateWindowExW(0, L"BUTTON", L"启用加密/Encrypt", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        x + 330, y - 2, 140, 24, m_hWnd, reinterpret_cast<HMENU>(2), m_hInst, nullptr);
+        x + 330, y - 2, 140, 24, m_hWnd, reinterpret_cast<HMENU>(IDC_CHK_ENCRYPT), m_hInst, nullptr);
     m_btnGenerate = CreateWindowExW(0, L"BUTTON", L"生成Version.dat/Generate", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-        x + 480, y - 2, 160, 24, m_hWnd, reinterpret_cast<HMENU>(3), m_hInst, nullptr);
+        x + 480, y - 2, 160, 24, m_hWnd, reinterpret_cast<HMENU>(IDC_BTN_GENERATE), m_hInst, nullptr);
+    y += 34;
+    m_lblUrlInput = CreateWindowExW(0, L"STATIC", L"URL输入/Input:", WS_CHILD | WS_VISIBLE, x, y, 90, 20, m_hWnd, nullptr, m_hInst, nullptr);
+    m_editUrlInput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        x + 95, y - 2, 420, 24, m_hWnd, nullptr, m_hInst, nullptr);
+    m_btnEncryptUrl = CreateWindowExW(0, L"BUTTON", L"URL加密/Encrypt URL", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        x + 525, y - 2, 140, 24, m_hWnd, reinterpret_cast<HMENU>(IDC_BTN_URL_ENCRYPT), m_hInst, nullptr);
+    y += 32;
+    m_lblUrlOutput = CreateWindowExW(0, L"STATIC", L"Hex输出/Output:", WS_CHILD | WS_VISIBLE, x, y, 90, 20, m_hWnd, nullptr, m_hInst, nullptr);
+    m_editUrlOutput = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
+        x + 95, y - 2, 560, 24, m_hWnd, nullptr, m_hInst, nullptr);
     y += 34;
     m_lblLog = CreateWindowExW(0, L"STATIC", L"日志/Log:", WS_CHILD | WS_VISIBLE, x, y, 80, 20, m_hWnd, nullptr, m_hInst, nullptr);
     m_editLog = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
@@ -196,6 +315,7 @@ void UpdateForgeApp::CreateControls()
     HWND controls[] = {
         m_lblPath, m_editPath, m_btnBrowse,
         m_lblKey, m_editKey, m_chkEncrypt, m_btnGenerate,
+        m_lblUrlInput, m_editUrlInput, m_btnEncryptUrl, m_lblUrlOutput, m_editUrlOutput,
         m_lblLog, m_editLog
     };
     for (HWND h : controls)
@@ -221,18 +341,67 @@ void UpdateForgeApp::CreateControls()
     UpdateStatusText(L"\u72b6\u6001: \u5c31\u7eea / Status: Ready");
     UpdateProgress(0, 0);
 
-    // Default to "<cwd>\\Update" to reduce manual input for common usage.
-    wchar_t cwd[MAX_PATH]{};
-    if (GetCurrentDirectoryW(MAX_PATH, cwd))
-    {
-        std::wstring guess = cwd;
-        guess.append(L"\\Update");
-        SetWindowTextW(m_editPath, guess.c_str());
-    }
+    LoadCachedSettings();
 
     RECT rc{};
     GetClientRect(m_hWnd, &rc);
     LayoutControls(rc.right - rc.left, rc.bottom - rc.top);
+}
+
+void UpdateForgeApp::LoadCachedSettings()
+{
+    const std::wstring iniPath = GetSettingsIniPath();
+    wchar_t pathBuf[4096]{};
+    wchar_t keyBuf[4096]{};
+    GetPrivateProfileStringW(L"ui", L"update_dir", L"", pathBuf, static_cast<DWORD>(std::size(pathBuf)), iniPath.c_str());
+    GetPrivateProfileStringW(L"ui", L"encrypt_key", L"", keyBuf, static_cast<DWORD>(std::size(keyBuf)), iniPath.c_str());
+
+    std::wstring updateDir = pathBuf;
+    if (updateDir.empty())
+    {
+        wchar_t cwd[MAX_PATH]{};
+        if (GetCurrentDirectoryW(MAX_PATH, cwd))
+        {
+            updateDir = cwd;
+            updateDir.append(L"\\Update");
+        }
+    }
+
+    SetWindowTextW(m_editPath, updateDir.c_str());
+    SetWindowTextW(m_editKey, keyBuf);
+}
+
+void UpdateForgeApp::SaveCachedSettings()
+{
+    const std::wstring iniPath = GetSettingsIniPath();
+    wchar_t pathBuf[4096]{};
+    wchar_t keyBuf[4096]{};
+    GetWindowTextW(m_editPath, pathBuf, static_cast<int>(std::size(pathBuf)));
+    GetWindowTextW(m_editKey, keyBuf, static_cast<int>(std::size(keyBuf)));
+    WritePrivateProfileStringW(L"ui", L"update_dir", pathBuf, iniPath.c_str());
+    WritePrivateProfileStringW(L"ui", L"encrypt_key", keyBuf, iniPath.c_str());
+
+    if (!m_hWnd || !IsWindow(m_hWnd))
+    {
+        return;
+    }
+
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    if (!GetWindowPlacement(m_hWnd, &placement))
+    {
+        return;
+    }
+
+    int width = placement.rcNormalPosition.right - placement.rcNormalPosition.left;
+    int height = placement.rcNormalPosition.bottom - placement.rcNormalPosition.top;
+    width = (std::max)(width, 760);
+    height = (std::max)(height, 540);
+
+    const std::wstring widthText = std::to_wstring(width);
+    const std::wstring heightText = std::to_wstring(height);
+    WritePrivateProfileStringW(L"ui", L"window_width", widthText.c_str(), iniPath.c_str());
+    WritePrivateProfileStringW(L"ui", L"window_height", heightText.c_str(), iniPath.c_str());
 }
 
 void UpdateForgeApp::LayoutControls(int width, int height)
@@ -244,6 +413,7 @@ void UpdateForgeApp::LayoutControls(int width, int height)
     const int browseWidth = 110;
     const int checkWidth = 170;
     const int generateWidth = 220;
+    const int urlButtonWidth = 170;
     const int statusHeight = 24;
 
     int clientW = (std::max)(width, 760);
@@ -268,6 +438,17 @@ void UpdateForgeApp::LayoutControls(int width, int height)
     MoveWindow(m_editKey, inputLeft, y, keyEditWidth, rowHeight, TRUE);
     MoveWindow(m_chkEncrypt, checkX, y, checkWidth, rowHeight, TRUE);
     MoveWindow(m_btnGenerate, generateX, y, generateWidth, rowHeight, TRUE);
+
+    y += 34;
+    MoveWindow(m_lblUrlInput, margin, y + 2, labelWidth, 20, TRUE);
+    int urlInputWidth = rightEdge - inputLeft - spacing - urlButtonWidth;
+    urlInputWidth = (std::max)(urlInputWidth, 140);
+    MoveWindow(m_editUrlInput, inputLeft, y, urlInputWidth, rowHeight, TRUE);
+    MoveWindow(m_btnEncryptUrl, inputLeft + urlInputWidth + spacing, y, urlButtonWidth, rowHeight, TRUE);
+
+    y += 32;
+    MoveWindow(m_lblUrlOutput, margin, y + 2, labelWidth, 20, TRUE);
+    MoveWindow(m_editUrlOutput, inputLeft, y, rightEdge - inputLeft, rowHeight, TRUE);
 
     y += 34;
     MoveWindow(m_lblLog, margin, y, 120, 20, TRUE);
@@ -300,7 +481,33 @@ void UpdateForgeApp::OnBrowse()
     if (!path.empty())
     {
         SetWindowTextW(m_editPath, path.c_str());
+        SaveCachedSettings();
     }
+}
+
+void UpdateForgeApp::OnEncryptUrl()
+{
+    wchar_t urlBuf[4096]{};
+    GetWindowTextW(m_editUrlInput, urlBuf, static_cast<int>(std::size(urlBuf)));
+    std::wstring urlText = urlBuf;
+    if (urlText.empty())
+    {
+        AppendLogAsync(L"请输入要加密的URL。 / Please input the URL to encrypt.");
+        return;
+    }
+
+    std::string plain = WideToUtf8(urlText);
+    std::string hexCipher;
+    std::wstring error;
+    if (!EncryptLauncherUrlToHex(plain, hexCipher, error))
+    {
+        AppendLogAsync(L"URL加密失败: " + error + L" / URL encryption failed.");
+        return;
+    }
+
+    std::wstring hexText(hexCipher.begin(), hexCipher.end());
+    SetWindowTextW(m_editUrlOutput, hexText.c_str());
+    AppendLogAsync(L"URL加密完成。请将Hex结果写入ReadMe.txt。 / URL encrypted. Write the hex output to ReadMe.txt.");
 }
 
 void UpdateForgeApp::OnGenerate()
@@ -327,6 +534,7 @@ void UpdateForgeApp::OnGenerate()
     wchar_t keyBuf[256]{};
     GetWindowTextW(m_editKey, keyBuf, 256);
     std::wstring key = keyBuf;
+    SaveCachedSettings();
     bool encrypt = (SendMessageW(m_chkEncrypt, BM_GETCHECK, 0, 0) == BST_CHECKED);
     UpdateStatusText(L"\u72b6\u6001: \u751f\u6210\u4e2d... / Status: Generating...");
     UpdateProgress(0, 0);
@@ -403,6 +611,7 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
                 if (i >= tasks.size())
                     break;
                 const auto& task = tasks[i];
+                log(L"处理文件 / Processing: " + task.relPath);
                 std::error_code fec;
                 auto fsize = fs::file_size(task.fullPath, fec);
                 if (!fec)
@@ -506,6 +715,8 @@ void UpdateForgeApp::SetBusy(bool busy)
     EnableWindow(m_editPath, !busy);
     EnableWindow(m_editKey, !busy);
     EnableWindow(m_chkEncrypt, !busy);
+    EnableWindow(m_editUrlInput, !busy);
+    EnableWindow(m_btnEncryptUrl, !busy);
 }
 
 void UpdateForgeApp::Log(const std::wstring& text)
@@ -602,14 +813,17 @@ LRESULT CALLBACK UpdateForgeApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
-        case 1:
+        case IDC_BTN_BROWSE:
             self->OnBrowse();
             break;
-        case 2:
+        case IDC_CHK_ENCRYPT:
             // checkbox handled automatically
             break;
-        case 3:
+        case IDC_BTN_GENERATE:
             self->OnGenerate();
+            break;
+        case IDC_BTN_URL_ENCRYPT:
+            self->OnEncryptUrl();
             break;
         default:
             break;
@@ -647,6 +861,7 @@ LRESULT CALLBACK UpdateForgeApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         break;
     }
     case WM_DESTROY:
+        self->SaveCachedSettings();
         PostQuitMessage(0);
         break;
     default:

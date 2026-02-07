@@ -14,8 +14,11 @@ private:
     void CreateControls();
     void LayoutControls(int width, int height);
     void OnBrowse();
+    void OnEncryptUrl();
     void OnGenerate();
     void RunWorker(std::wstring root, std::wstring key, bool encrypt);
+    void LoadCachedSettings();
+    void SaveCachedSettings();
     void UpdateStatusText(const std::wstring& text);
     void UpdateProgress(int processed, int total);
     void AppendProgressAsync(int processed, int total);
@@ -35,6 +38,11 @@ private:
     HWND m_editKey{};
     HWND m_chkEncrypt{};
     HWND m_btnGenerate{};
+    HWND m_lblUrlInput{};
+    HWND m_editUrlInput{};
+    HWND m_btnEncryptUrl{};
+    HWND m_lblUrlOutput{};
+    HWND m_editUrlOutput{};
     HWND m_lblLog{};
     HWND m_editLog{};
     HWND m_statusBar{};

@@ -31,6 +31,7 @@ namespace {
 constexpr const char* kBootstrapHost = "https://gitee.com";
 constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
 
+// Normalize a relative URL path with forward slashes and a leading '/'.
 std::string NormalizeRelativeUrlPath(std::string path) {
 	std::replace(path.begin(), path.end(), '\\', '/');
 	if (path.empty()) {
@@ -42,6 +43,7 @@ std::string NormalizeRelativeUrlPath(std::string path) {
 	return path;
 }
 
+// Join base and child URL paths with a single separator.
 std::string JoinUrlPath(const std::string& basePath, const std::string& childPath) {
 	std::string base = basePath;
 	std::string child = childPath;
@@ -63,14 +65,17 @@ std::string JoinUrlPath(const std::string& basePath, const std::string& childPat
 	return base + child;
 }
 
+// Build the signaling endpoint URL from base and page path.
 std::string BuildSignalEndpoint(const std::string& baseUrl, const std::string& pagePath) {
 	return baseUrl + JoinUrlPath(pagePath, "signal");
 }
 
+// Return true when the string starts with http/https.
 bool IsHttpUrl(const std::string& value) {
 	return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
 }
 
+// Parse http/https URL into components.
 bool ParseHttpUrl(const std::string& url, bool& useTls, std::string& host, int& port, std::string& path) {
 	std::regex urlRegex(R"((https?)://([^/:]+)(?::(\d+))?(\/.*)?)");
 	std::smatch match;
@@ -90,6 +95,7 @@ bool ParseHttpUrl(const std::string& url, bool& useTls, std::string& host, int& 
 	return true;
 }
 
+// Split an absolute URL into base URL and path.
 bool ExtractBaseAndPath(const std::string& absoluteUrl, std::string& baseUrl, std::string& path) {
 	bool useTls = false;
 	std::string host;
@@ -105,6 +111,7 @@ bool ExtractBaseAndPath(const std::string& absoluteUrl, std::string& baseUrl, st
 	return true;
 }
 
+// Trim ASCII whitespace from both ends of a string.
 std::string TrimAscii(std::string value) {
 	const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
 	while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
@@ -116,6 +123,7 @@ std::string TrimAscii(std::string value) {
 	return value;
 }
 
+// Return directory portion of a URL path, keeping a trailing '/'.
 std::string DirnamePath(std::string path) {
 	if (path.empty()) {
 		return "/";
@@ -139,6 +147,7 @@ std::string DirnamePath(std::string path) {
 	return path;
 }
 
+// Extract a file name from a URL path.
 std::string GetFileNameFromUrl(std::string url) {
 	const size_t hashPos = url.find('#');
 	if (hashPos != std::string::npos) {
@@ -159,6 +168,7 @@ std::string GetFileNameFromUrl(std::string url) {
 	return url.substr(slash + 1);
 }
 
+// Decode a hex-encoded body to raw bytes.
 bool HexBodyToBytes(const std::string& body, std::string& out) {
 	std::string hex;
 	hex.reserve(body.size());
@@ -186,6 +196,7 @@ bool HexBodyToBytes(const std::string& body, std::string& out) {
 	return true;
 }
 
+// Append unique non-empty strings from source into target.
 void MergeUnique(std::vector<std::string>& target, const std::vector<std::string>& source) {
 	for (const auto& item : source) {
 		if (item.empty()) {
@@ -197,6 +208,7 @@ void MergeUnique(std::vector<std::string>& target, const std::vector<std::string
 	}
 }
 
+// Read an array of trimmed strings from a JSON key.
 std::vector<std::string> ReadStringArray(const Json::Value& parent, const char* key) {
 	std::vector<std::string> values;
 	if (!parent.isMember(key) || !parent[key].isArray()) {
@@ -227,6 +239,7 @@ struct ChunkState {
 	std::vector<ChunkRecord> chunks;
 };
 
+// Sum per-chunk downloaded bytes with bounds checking.
 uint64_t ComputeDownloadedBytes(const ChunkState& state) {
 	uint64_t total = 0;
 	for (const auto& chunk : state.chunks) {
@@ -236,6 +249,7 @@ uint64_t ComputeDownloadedBytes(const ChunkState& state) {
 	return total;
 }
 
+// Return true when all chunks are marked complete.
 bool AreAllChunksDone(const ChunkState& state) {
 	for (const auto& chunk : state.chunks) {
 		if (!chunk.done) {
@@ -245,6 +259,7 @@ bool AreAllChunksDone(const ChunkState& state) {
 	return !state.chunks.empty();
 }
 
+// Initialize chunk ranges for a file download.
 void InitializeChunkState(ChunkState& state, const std::string& url, uint64_t fileSize, uint64_t chunkSize) {
 	state.url = url;
 	state.fileSize = fileSize;
@@ -264,6 +279,7 @@ void InitializeChunkState(ChunkState& state, const std::string& url, uint64_t fi
 	}
 }
 
+// Persist chunk download state to JSON on disk.
 bool SaveChunkStateToJson(const std::string& statePath, const ChunkState& state) {
 	Json::Value root;
 	root["url"] = state.url;
@@ -308,6 +324,7 @@ bool SaveChunkStateToJson(const std::string& statePath, const ChunkState& state)
 	return true;
 }
 
+// Load chunk download state from JSON on disk.
 bool LoadChunkStateFromJson(const std::string& statePath, ChunkState& outState) {
 	std::ifstream ifs(statePath, std::ios::binary);
 	if (!ifs.is_open()) {
@@ -351,6 +368,7 @@ bool LoadChunkStateFromJson(const std::string& statePath, ChunkState& outState) 
 	return true;
 }
 
+// Ensure a temp file exists and matches the requested size.
 bool EnsureSizedTempFile(const std::string& path, uint64_t fileSize) {
 	std::error_code ec;
 	const bool exists = std::filesystem::exists(path, ec);
@@ -375,6 +393,7 @@ bool EnsureSizedTempFile(const std::string& path, uint64_t fileSize) {
 	return ofs.good();
 }
 
+// Normalize archive paths to a safe, relative, forward-slash form.
 std::string NormalizeArchivePath(std::string path) {
 	std::replace(path.begin(), path.end(), '\\', '/');
 	while (!path.empty() && (path.front() == '/' || path.front() == '.')) {
@@ -390,6 +409,7 @@ std::string NormalizeArchivePath(std::string path) {
 	return path;
 }
 
+// Return the parent directory of an archive path.
 std::string GetArchiveParentPath(const std::string& path) {
 	const size_t pos = path.find_last_of('/');
 	if (pos == std::string::npos) {
@@ -398,6 +418,7 @@ std::string GetArchiveParentPath(const std::string& path) {
 	return path.substr(0, pos);
 }
 
+// Extract the file name from an archive path.
 std::string GetArchiveFileName(const std::string& path) {
 	const size_t pos = path.find_last_of('/');
 	if (pos == std::string::npos) {
@@ -406,6 +427,7 @@ std::string GetArchiveFileName(const std::string& path) {
 	return path.substr(pos + 1);
 }
 
+// Split an archive path into its components.
 std::vector<std::string> SplitArchivePath(const std::string& path) {
 	std::vector<std::string> parts;
 	size_t start = 0;
@@ -422,6 +444,7 @@ std::vector<std::string> SplitArchivePath(const std::string& path) {
 	return parts;
 }
 
+// Join archive path components with '/'.
 std::string JoinArchivePath(const std::vector<std::string>& parts) {
 	if (parts.empty()) {
 		return {};
@@ -434,6 +457,7 @@ std::string JoinArchivePath(const std::vector<std::string>& parts) {
 	return out;
 }
 
+// Lowercase ASCII characters in a string.
 std::string GetLowerAscii(std::string value) {
 	for (auto& c : value) {
 		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -441,6 +465,7 @@ std::string GetLowerAscii(std::string value) {
 	return value;
 }
 
+// Find the common parent path for executable entries.
 std::string DetermineExeRootPrefix(const std::vector<DataBlock>& files) {
 	std::vector<std::vector<std::string>> exeParentParts;
 	for (const auto& file : files) {
@@ -477,6 +502,7 @@ std::string DetermineExeRootPrefix(const std::vector<DataBlock>& files) {
 	return JoinArchivePath(common);
 }
 
+// Strip an archive path prefix when present.
 std::string StripArchivePrefix(const std::string& fullPath, const std::string& prefix) {
 	if (prefix.empty()) {
 		return fullPath;
@@ -492,6 +518,7 @@ std::string StripArchivePrefix(const std::string& fullPath, const std::string& p
 	return fullPath;
 }
 
+// Validate and normalize a safe relative path.
 bool MakeSafeRelativePath(const std::string& input, std::string& out) {
 	std::filesystem::path p(input);
 	p = p.lexically_normal();
@@ -516,6 +543,7 @@ bool MakeSafeRelativePath(const std::string& input, std::string& out) {
 	return !out.empty();
 }
 
+// Parse content length or range total from a response.
 uint64_t ParseTotalSizeFromResponse(const httplib::Response& response) {
 	const std::string contentRange = response.get_header_value("Content-Range");
 	if (!contentRange.empty()) {
@@ -542,6 +570,7 @@ uint64_t ParseTotalSizeFromResponse(const httplib::Response& response) {
 
 } // namespace
 
+// Write data to a file opened with shared read/write access.
 void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::string& data) {
 	HANDLE hFile = CreateFile(
 		strLocalFile.c_str(),
@@ -567,6 +596,7 @@ void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::st
 }
 
 
+// Initialize the worker thread and background web service.
 WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir, const P2PSettings& initialP2PSettings)
 	: m_hMainWnd(hWnd), m_strModulePath(strModulePath), m_strModuleName(strModuleName), m_strModuleDir(strModuleDir)
 	, m_bUpdateSelf(false), m_nTotalDownload(0), m_nCurrentDownload(0), m_nCurrentDownloadSize(0), m_nCurrentDownloadProgress(0)
@@ -604,10 +634,12 @@ WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::
 	WebTr.detach();
 }
 
+// Cleanup hook for WorkThread lifecycle.
 WorkThread::~WorkThread()
 {
 }
 
+// Thread entry point that terminates stray processes and runs the worker.
 DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 {
 	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -623,7 +655,7 @@ DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 					if (QueryFullProcessImageName(hProcess, 0, processPath, &dwSize))
 					{
 						std::wstring strProcessPath = processPath;
-						if (strProcessPath.find(L"MapleReborn.exe") != std::string::npos){
+						if (strProcessPath.find(L"MapleFireReborn.exe") != std::string::npos){
 							TerminateProcess(hProcess, 0);
 						}
 						if (strProcessPath.find(L"MapleStory.exe") != std::string::npos) {
@@ -644,11 +676,14 @@ DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 	return 0;
 }
 
+// 主流程：拉取配置、检查更新、启动客户端并进入监控循环。
 DWORD WorkThread::Run()
 {
+	// 记录当前工作目录
 	m_strCurrentDir = std::filesystem::current_path().string();
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
+	// 拉取启动配置（包含下载地址与 P2P 参数）
 	if (!FetchBootstrapConfig())
 	{
 		MessageBox(m_hMainWnd, L"Failed to fetch bootstrap config.", L"Error", MB_OK);
@@ -657,6 +692,7 @@ DWORD WorkThread::Run()
 	}
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
+	// 补齐信令地址并同步 P2P 配置到客户端
 	{
 		std::lock_guard<std::mutex> lock(m_p2pMutex);
 		if (m_p2pSettings.signalEndpoint.empty()) {
@@ -667,9 +703,11 @@ DWORD WorkThread::Run()
 		}
 	}
 
+	// 初始化主下载客户端
 	m_client = new httplib::Client(m_strUrl);
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+	// 基础包不存在时先下载并解压
 	if (!std::filesystem::exists("./Data"))
 	{
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
@@ -685,6 +723,7 @@ DWORD WorkThread::Run()
 
 	{
 		std::cout << "9999999999999999999" << std::endl;
+		// 读取本地 Version.dat，并计算 MD5
 		std::string strLocalVersionDatContent;
 		std::ifstream ifs("Version.dat", std::ios::binary);
 		if (ifs.is_open()) {
@@ -696,6 +735,7 @@ DWORD WorkThread::Run()
 		std::cout << "aaaaaaaaaaaaaaaaaaaaaaa" << std::endl;
 		m_strLocalVersionMD5 = FileHash::string_md5(strLocalVersionDatContent);
 
+		// 解析本地清单，初始化本地文件表与运行时列表
 		if (!strLocalVersionDatContent.empty())
 		{
 			std::string strLocalVersionDat = DecryptVersionDat(strLocalVersionDatContent);
@@ -714,6 +754,7 @@ DWORD WorkThread::Run()
 						continue;
 					}
 					m_mapFiles[config.m_strPage] = config;
+					// 为每个清单路径准备本地文件占位
 					try {
 						const std::filesystem::path localPath =
 							std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
@@ -742,6 +783,7 @@ DWORD WorkThread::Run()
 		}
 	}
 
+	// 拉取远端清单并下载运行时更新
 	RefreshRemoteVersionManifest();
 	if (!DownloadRunTimeFile())
 	{
@@ -750,48 +792,55 @@ DWORD WorkThread::Run()
 		return 0;
 	}
 
+	// 需要自更新时，启动临时更新程序并退出
 	if (m_bUpdateSelf)
 	{
 		Stop();
 		ShellExecute(NULL, L"open", L"UpdateTemp.exe", m_strModulePath.c_str(), m_strModuleDir.c_str(), SW_SHOWNORMAL);
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
-		WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+		WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 		ExitProcess(0);
 		return 0;
 	}
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	unsigned long long dwTick = GetTickCount64();
+	// 写入共享内存供客户端读取文件校验信息
 	WriteDataToMapping();
 
 	unsigned long long dwNewTick = GetTickCount64();
 	std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
 	dwTick = dwNewTick;
 
+	// 启动客户端进程
 	STARTUPINFO si = { sizeof(si) };
 	PROCESS_INFORMATION pi;
 	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
 		HandleError("CreateProcess failed");
 	}
 
+	// 最小化托盘，并停止渲染
 	PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
 	g_bRendering = false;
 
 	dwNewTick = GetTickCount64();
 	std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
 
+	// 记录主客户端进程句柄与 PID
 	m_hGameProcess[0] = pi.hProcess;
 	m_dwGameProcessId[0] = pi.dwProcessId;
 
+	// 写入配置以便其他模块读取 PID
 	TCHAR szPID[32] = { 0 };
 	_itow_s(pi.dwProcessId, szPID, 10);
-	WriteProfileString(TEXT("MapleReborn"), TEXT("Client1PID"), szPID);
+	WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client1PID"), szPID);
 
 	if (pi.hThread)
 	{
 		CloseHandle(pi.hThread);
 	}
 
+	// 轮询监控客户端进程是否仍在运行
 	do
 	{
 		bool bHaveGameRun = false;
@@ -810,6 +859,7 @@ DWORD WorkThread::Run()
 			}
 		}
 
+		// 客户端都退出且 UI 不渲染时，关闭托盘并结束
 		if (bHaveGameRun == false && g_bRendering == false)
 		{
 			PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
@@ -819,6 +869,7 @@ DWORD WorkThread::Run()
 		Sleep(1);
 	} while (m_bRun);
 
+	// 清理残留的客户端进程句柄
 	for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
 	{
 		if (m_hGameProcess[i])
@@ -830,17 +881,20 @@ DWORD WorkThread::Run()
 		}
 	}
 
+	// 关闭工作线程句柄
 	CloseHandle(m_hThread);
 	m_hThread = nullptr;
 
 	return 0;
 }
 
+// Log a Windows error and abort.
 void WorkThread::HandleError(const char* msg) {
 	std::cerr << msg << " Error: " << GetLastError() << std::endl;
 	exit(1);
 }
 
+// Decrypt bootstrap config payload using a fixed AES key.
 std::string WorkThread::DecryptConfigPayload(const std::string& ciphertext)
 {
 	HCRYPTPROV hProv;
@@ -887,6 +941,7 @@ std::string WorkThread::DecryptConfigPayload(const std::string& ciphertext)
 	return ciphertext;
 }
 
+// Decompress and decode Version.dat payload.
 std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 {
 	if (ciphertext.empty()) {
@@ -929,6 +984,7 @@ std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 	return strJson;
 }
 
+// Download runtime files listed in the manifest.
 bool WorkThread::DownloadRunTimeFile()
 {
 	m_nTotalDownload = m_vecRunTimeList.size();
@@ -994,38 +1050,45 @@ bool WorkThread::DownloadRunTimeFile()
 	return true;
 }
 
+// Return total download count.
 int WorkThread::GetTotalDownload() const
 {
 	return m_nTotalDownload;
 }
 
+// Return current download index.
 int WorkThread::GetCurrentDownload() const
 {
 	return m_nCurrentDownload;
 }
 
+// Return current download file name.
 std::wstring WorkThread::GetCurrentDownloadFile()
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	return m_strCurrentDownload;
 }
 
+// Set the UI-visible current download file name.
 void WorkThread::SetCurrentDownloadFile(const std::wstring& strFile)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	m_strCurrentDownload = strFile;
 }
 
+// Return current download total size.
 int WorkThread::GetCurrentDownloadSize() const
 {
 	return m_nCurrentDownloadSize;
 }
 
+// Return current download progress.
 int WorkThread::GetCurrentDownloadProgress() const
 {
 	return m_nCurrentDownloadProgress;
 }
 
+// Download a file from an absolute URL without resume.
 bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath)
 {
 	bool useTls = false;
@@ -1130,6 +1193,7 @@ bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, con
 	return true;
 }
 
+// Download a file with ranged, chunked resume support.
 bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount)
 {
 	bool useTls = false;
@@ -1435,6 +1499,7 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	return true;
 }
 
+// Download and extract the base package archive.
 bool WorkThread::DownloadBasePackage()
 {
 	m_nTotalDownload = 1;
@@ -1484,6 +1549,7 @@ bool WorkThread::DownloadBasePackage()
 	return true;
 }
 
+// Extract a 7z archive with parallel workers.
 void WorkThread::Extract7z(const std::string& filename, const std::string& destPath)
 {
 	std::vector<DataBlock> allFiles = ScanArchive(filename);
@@ -1526,6 +1592,7 @@ void WorkThread::Extract7z(const std::string& filename, const std::string& destP
 }
 
 // Scan archive file and get list of file info
+// Scan a 7z archive and return file metadata.
 std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 	struct archive* a;
 	struct archive_entry* entry;
@@ -1580,6 +1647,7 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 }
 
 // Thread function to extract a group of files
+// Extract a subset of archive files on a worker thread.
 void WorkThread::ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files) {
 	struct archive* a;
 	struct archive_entry* entry;
@@ -1652,6 +1720,7 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 	archive_read_free(a);
 }
 
+// Download a file with HTTP resume (or P2P when enabled).
 bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path) {
 
 	std::string strUrl = NormalizeRelativeUrlPath(url);
@@ -1762,6 +1831,7 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 }
 
 
+// Publish file hashes into named shared memory blocks.
 void WorkThread::WriteDataToMapping()
 {
 	// m_mapFiles
@@ -1784,6 +1854,7 @@ void WorkThread::WriteDataToMapping()
 	}
 }
 
+// Run local HTTP control endpoints for download/launch.
 void WorkThread::WebServiceThread()
 {
 	httplib::Server svr;
@@ -1841,11 +1912,11 @@ svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res
 			_itow_s(pi.dwProcessId, szPID, 10);
 			if (i == 0)
 			{
-				WriteProfileString(TEXT("MapleReborn"), TEXT("Client1PID"), szPID);
+				WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client1PID"), szPID);
 			}
 			else if (i == 1)
 			{
-				WriteProfileString(TEXT("MapleReborn"), TEXT("Client2PID"), szPID);
+				WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client2PID"), szPID);
 			}
 
 			if (pi.hThread)
@@ -1891,6 +1962,7 @@ svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res
 	std::cout << "Web service thread finished" << std::endl;
 }
 
+// Stop worker execution and shut down HTTP clients.
 void WorkThread::Stop()
 {
 	// notify the local server that we're done
@@ -1903,18 +1975,21 @@ void WorkThread::Stop()
 	}
 }
 
+// Update P2P settings with thread safety.
 void WorkThread::UpdateP2PSettings(const P2PSettings& settings)
 {
 	std::lock_guard<std::mutex> lock(m_p2pMutex);
 	m_p2pSettings = settings;
 }
 
+// Return a snapshot of current P2P settings.
 P2PSettings WorkThread::GetP2PSettings() const
 {
 	std::lock_guard<std::mutex> lock(m_p2pMutex);
 	return m_p2pSettings;
 }
 
+// Fetch and parse the bootstrap configuration payload.
 bool WorkThread::FetchBootstrapConfig()
 {
 	std::cout << "FetchBootstrapConfig" << std::endl;
@@ -2071,18 +2146,22 @@ bool WorkThread::FetchBootstrapConfig()
 	return true;
 }
 
+// Download and parse the remote version manifest.
 bool WorkThread::RefreshRemoteVersionManifest()
 {
+	// 计算当前应该拉取的 Version.dat 路径（优先使用显式路径）
 	const std::string strVersionDatPath = m_strVersionManifestPath.empty()
 		? JoinUrlPath(m_strPage, "Version.dat")
 		: m_strVersionManifestPath;
 
+	// 封装请求逻辑：支持绝对 URL 与已有客户端
 	auto fetchManifest = [this](const std::string& requestTarget) -> httplib::Result {
 		httplib::Headers headers;
 		headers.insert({ "Accept", "application/octet-stream" });
 		headers.insert({ "Cache-Control", "no-cache" });
 
 		if (IsHttpUrl(requestTarget)) {
+			// 绝对 URL：临时创建客户端拉取
 			bool useTls = false;
 			std::string host;
 			int port = 0;
@@ -2109,15 +2188,18 @@ bool WorkThread::RefreshRemoteVersionManifest()
 			}
 		}
 
+		// 相对路径：复用主下载客户端
 		if (!m_client) {
 			return httplib::Result();
 		}
 		return m_client->Get(requestTarget.c_str(), headers);
 	};
 
+	// 首次尝试拉取清单
 	httplib::Result res = fetchManifest(strVersionDatPath);
 	std::string resolvedPath = strVersionDatPath;
 
+	// 本地相对路径失败时，回退到同目录默认文件名
 	if ((!res || res->status != 200 || res->body.empty()) && !IsHttpUrl(strVersionDatPath)) {
 		const std::string fileName = GetFileNameFromUrl(strVersionDatPath);
 		const std::string fallbackPath = JoinUrlPath(m_strPage, fileName.empty() ? "Version.dat" : fileName);
@@ -2131,6 +2213,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		}
 	}
 
+	// 状态码/内容校验
 	if (!res || res->status != 200) {
 		const std::string statusText = res ? std::to_string(res->status) : std::string("none");
 		const int errorCode = static_cast<int>(res.error());
@@ -2145,6 +2228,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		return false;
 	}
 
+	// JSON 解析器封装
 	auto parseJsonObject = [](const std::string& text, Json::Value& out) -> bool {
 		Json::CharReaderBuilder builder;
 		std::string errors;
@@ -2152,22 +2236,23 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		return Json::parseFromStream(builder, iss, &out, &errors) && out.isObject();
 	};
 
+	// 尝试解析清单（支持明文 JSON / 旧版压缩 / 兼容 hex 编码）
 	std::string manifestBinary = res->body;
 	std::string manifestJsonText;
 	Json::Value root;
 
-	// New format: plain JSON body from UpdateForge.
+	// 新格式：来自 UpdateForge 的纯 JSON 主体。
 	if (parseJsonObject(manifestBinary, root)) {
 		manifestJsonText = manifestBinary;
 	}
 	else {
-		// Legacy format: zstd-compressed Version.dat payload.
+		// 旧版格式：zstd 压缩的 Version.dat 有效负载。
 		const std::string decompressed = DecryptVersionDat(manifestBinary);
 		if (!decompressed.empty() && parseJsonObject(decompressed, root)) {
 			manifestJsonText = decompressed;
 		}
 		else {
-			// Compatibility: if payload was hex-encoded text, decode once then retry.
+			// 兼容性处理：如果有效负载是 hex 编码文本，解码一次后重试。
 			std::string decoded;
 			if (HexBodyToBytes(manifestBinary, decoded)) {
 				if (parseJsonObject(decoded, root)) {
@@ -2185,15 +2270,18 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		}
 	}
 
+	// 无法识别格式则失败
 	if (manifestJsonText.empty()) {
 		std::cout << "Version.dat format not supported, path: " << resolvedPath
 			<< ", body_size: " << res->body.size() << std::endl;
 		return false;
 	}
 
+	// 对比 MD5，仅当远端不同才刷新本地清单
 	std::string strRemoteVersionDatMd5 = FileHash::string_md5(manifestBinary);
 	if (strRemoteVersionDatMd5 != m_strLocalVersionMD5)
 	{
+		// 写回 Version.dat 并更新内存清单结构
 		std::ofstream ofs("Version.dat", std::ios::binary);
 		ofs.write(manifestBinary.data(), manifestBinary.size());
 		ofs.close();
@@ -2210,6 +2298,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 				continue;
 			}
 			m_mapFiles[config.m_strPage] = config;
+			// 确保本地路径存在或创建占位文件
 			try {
 				const std::filesystem::path localPath =
 					std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
@@ -2231,6 +2320,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 				m_mapFiles.erase(config.m_strPage);
 			}
 		}
+		// 刷新运行时下载列表
 		m_vecRunTimeList.clear();
 		Json::Value downloadList = root["runtime"];
 		for (auto& download : downloadList) {

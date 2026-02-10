@@ -13,7 +13,7 @@ Important: current launcher client **does not yet open a real WebRTC data channe
 
 Launcher passes a **relative resource path** (`page + name`), examples:
 - `Update/1736140000/Data/Base.wz`
-- `MapleReborn.7z`
+- `MapleFireReborn.7z`
 
 Client request candidates (same server):
 1. `GET /signal?url=<relative-path>`
@@ -122,7 +122,7 @@ Error body should be plain text (or JSON if you intentionally want launcher fall
 
 ## 7. Quick Self-Test Cases
 
-1. `GET /signal?url=MapleReborn.7z` -> 200 + binary
+1. `GET /signal?url=MapleFireReborn.7z` -> 200 + binary
 2. `GET /signal?page=Update/1736140000/Data/Base.wz` -> 200 + binary
 3. `GET /signal/Update/1736140000/Data/Base.wz` -> 200 + binary
 4. `GET /signal?url=../../windows/system32/cmd.exe` -> 400/403

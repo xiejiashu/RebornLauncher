@@ -1,7 +1,7 @@
-# AI Summary - Remove MapleReborn.7z Hardcode
+# AI Summary - Remove MapleFireReborn.7z Hardcode
 
 ## 1) User request
-> "MapleReborn.7z 也不要用硬编码，根据URL的名字来。"
+> "MapleFireReborn.7z 也不要用硬编码，根据URL的名字来。"
 
 ## 2) What was done
 - Removed hardcoded base package archive name usage in download/extract flow.
@@ -10,14 +10,14 @@
   - download using URL-derived filename
   - extract that downloaded archive
   - remove that downloaded archive after extract
-- Removed hardcoded fallback injection of `MapleReborn.7z` when bootstrap JSON omits base package URL.
+- Removed hardcoded fallback injection of `MapleFireReborn.7z` when bootstrap JSON omits base package URL.
 - Added explicit bootstrap validation failure when `base_package_urls` / `base_package_url` is missing.
 - Built `RebornLauncher` Release successfully.
 
 ## 3) Changes
 - `RebornLauncher/WorkThread.cpp`
   - Added `GetFileNameFromUrl(...)`.
-  - `DownloadBasePackage()` now uses URL-derived `localArchivePath` instead of fixed `MapleReborn.7z`.
+  - `DownloadBasePackage()` now uses URL-derived `localArchivePath` instead of fixed `MapleFireReborn.7z`.
   - `Extract7z(...)` and post-extract remove now use the actual downloaded filename.
   - `FetchBootstrapConfig()` now fails if no base package URL is provided (instead of hardcoded fallback).
 - `docs/agent-meta/hot-files-index.md`

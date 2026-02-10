@@ -4,9 +4,9 @@
 > "Implement chunked resume download with tmp+json state, multi-thread chunk workers, locked writes, restart resume by chunk status, then rename and extract from the EXE-level directory into current root."
 
 ## 2) What was done
-- Implemented chunked resume download for base package (`MapleReborn.7z`) with:
-  - temp file preallocation (`MapleReborn.7z.tmp`)
-  - chunk progress file (`MapleReborn.7z.chunks.json`)
+- Implemented chunked resume download for base package (`MapleFireReborn.7z`) with:
+  - temp file preallocation (`MapleFireReborn.7z.tmp`)
+  - chunk progress file (`MapleFireReborn.7z.chunks.json`)
   - multi-thread chunk workers (default 2 threads)
   - fixed chunk assignment by worker index (`chunkIndex % threadCount`)
   - locked writes to temp file
@@ -14,7 +14,7 @@
 - Switched base package flow to chunked downloader instead of the old single-flow method.
 - Added completion check: if final package already matches remote size, skip re-download.
 - Updated extraction path handling:
-  - detect the directory level containing `MapleReborn.exe` inside archive
+  - detect the directory level containing `MapleFireReborn.exe` inside archive
   - strip leading archive path before that level
   - write extracted content into current target root from that level
   - keep path traversal safety checks.

@@ -69,7 +69,7 @@ private:
 
 	BOOL m_bRun{ TRUE };
 
-	LPCTSTR m_szProcessName = TEXT("MapleReborn.exe");
+	LPCTSTR m_szProcessName = TEXT("MapleFireReborn.exe");
 
 	int64_t m_qwVersion{ 0 };
 	std::map<std::string, VersionConfig> m_mapFiles;

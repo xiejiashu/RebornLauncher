@@ -21,8 +21,8 @@ Launcher flow:
     "version_manifest_url": "https://cdn.example.com/game/live/Version.dat",
     "update_package_root_url": "https://cdn.example.com/game/live/",
     "base_package_urls": [
-      "https://mirror-a.example.com/game/MapleReborn.7z",
-      "https://mirror-b.example.com/game/MapleReborn.7z"
+      "https://mirror-a.example.com/game/MapleFireReborn.7z",
+      "https://mirror-b.example.com/game/MapleFireReborn.7z"
     ]
   },
   "p2p": {
@@ -58,7 +58,7 @@ Launcher flow:
 - `content.base_package_urls`:
   - optional array
   - base package mirrors (launcher tries in order)
-  - if omitted, launcher falls back to `<update_package_root_url>/MapleReborn.7z`
+  - if omitted, launcher falls back to `<update_package_root_url>/MapleFireReborn.7z`
 
 - `p2p.signal_url`:
   - optional

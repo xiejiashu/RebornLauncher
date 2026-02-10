@@ -752,10 +752,10 @@ void MoveToDirectory(LPCTSTR lpTargetDir) {
             << TEXT(" Copy failed: ") << newPath << TEXT(" err:") << GetLastError() << std::endl;
     }
 
-	WriteProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir);
+	WriteProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir);
 }
 
-bool IsInMapleRebornDir() {
+bool IsInMapleFireRebornDir() {
     // TCHAR filePath[MAX_PATH];
     // GetModuleFileName(NULL, filePath, MAX_PATH);
 
@@ -763,7 +763,7 @@ bool IsInMapleRebornDir() {
 
     std::cout << "2222222222222222222222222222" << std::endl;
 	std::wstring str = g_strCurrentModulePath.c_str();
-	if (str.find(TEXT("MapleReborn")) != std::string::npos
+	if (str.find(TEXT("MapleFireReborn")) != std::string::npos
         || str.find(TEXT("RebornV")) != std::string::npos)
     {
         std::cout << "aaa" << std::endl;
@@ -844,7 +844,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 //	std::cout.rdbuf(outLogA.rdbuf());
 //#endif
 
-	DWORD dwPID = GetProfileInt(TEXT("MapleReborn"), TEXT("pid"),0);
+	DWORD dwPID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("pid"),0);
     if (dwPID)
     {
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
@@ -875,10 +875,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	DWORD dwCurrentPID = GetCurrentProcessId();
     TCHAR szPID[32] = { 0 };
 	_itow_s(dwCurrentPID, szPID, 10);
-	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), szPID);
+	WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), szPID);
 
-	DWORD dwClient1PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client1PID"), 0);
-	DWORD dwClient2PID = GetProfileInt(TEXT("MapleReborn"), TEXT("Client2PID"), 0);
+	DWORD dwClient1PID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("Client1PID"), 0);
+	DWORD dwClient2PID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("Client2PID"), 0);
 	if (dwClient1PID)
 	{
 		HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwClient1PID);
@@ -922,11 +922,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 #ifndef _DEBUG
-    if (!IsInMapleRebornDir())
+    if (!IsInMapleFireRebornDir())
     {
        //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
-		LPCTSTR lpTargetDir = TEXT("C:\\MapleReborn ");
-        const TCHAR* dirs[] = { TEXT("D:\\MapleReborn"), TEXT("E:\\MapleReborn"), TEXT("C:\\MapleReborn") };
+		LPCTSTR lpTargetDir = TEXT("C:\\MapleFireReborn ");
+        const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("C:\\MapleFireReborn") };
         for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
 			CreateDirectory(dirs[i], NULL);
 			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
@@ -937,7 +937,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		}
 
         TCHAR szGamePath[MAX_PATH] = { 0 };
-        GetProfileString(TEXT("MapleReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
+        GetProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
         MoveToDirectory(szGamePath);
 
         // MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
@@ -950,7 +950,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             // MessageBox(NULL, TEXT("44444444444444444444444"), TEXT("err"), MB_OK);
 		}
 		SHGetPathFromIDList(pidlDesktop, shortcutPath);
-		swprintf(shortcutPath, TEXT("%s\\MapleReborn.lnk"), shortcutPath);
+		swprintf(shortcutPath, TEXT("%s\\MapleFireReborn.lnk"), shortcutPath);
 		// TCHAR currentPath[MAX_PATH];
 		// GetModuleFileName(hInstance, currentPath, MAX_PATH);
 		// TCHAR* fileName = PathFindFileName(g_strCurrentModulePath.c_str());
@@ -961,7 +961,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
         if (!IsProcessRunning(newPath)) {
 			ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
-            WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+            WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
             ExitProcess(0);
         }
         return 0;
@@ -979,7 +979,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 				swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
 				CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
 				ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
-                WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+                WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 				ExitProcess(0);
 			}
         }
@@ -1037,7 +1037,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     std::cout << "Request stopped" << std::endl;
     workThread.Stop();
-	WriteProfileString(TEXT("MapleReborn"), TEXT("pid"), TEXT("0"));
+	WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 	g_workThreadPtr = nullptr;
 	if (g_gdiplusToken != 0) {
 		Gdiplus::GdiplusShutdown(g_gdiplusToken);

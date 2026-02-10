@@ -2,6 +2,9 @@ set(SRC dllmain.cpp)
 
 add_library(CryptoLoader SHARED ${SRC})
 
+# 加入detours 库
+target_link_libraries(CryptoLoader PRIVATE detours::detours)
+
 target_compile_definitions(
     CryptoLoader
     PRIVATE

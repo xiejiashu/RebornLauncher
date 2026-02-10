@@ -16,7 +16,7 @@
   - `p2p.signal_url`
   - `p2p.signal_auth_token`
   - `p2p.stun_servers`
-- Added base package mirror support and absolute URL download path for `MapleReborn.7z`.
+- Added base package mirror support and absolute URL download path for `MapleFireReborn.7z`.
 - Added remote version-manifest fetch support for absolute URL or relative URL.
 - Added robust helpers for URL parsing, path normalization, hex decode, and list merge.
 - Added dedicated JSON contract doc: `docs/bootstrap-config-json-spec.md`.

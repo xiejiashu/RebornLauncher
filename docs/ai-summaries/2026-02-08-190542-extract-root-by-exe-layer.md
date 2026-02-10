@@ -1,10 +1,10 @@
 # AI Summary - Extract Root By EXE Layer
 
 ## 1) User request
-> "exe not always MapleReborn.exe. It should work for various projects. There may be multiple exe files, and only one directory layer contains exe files. Use that layer as extraction root."
+> "exe not always MapleFireReborn.exe. It should work for various projects. There may be multiple exe files, and only one directory layer contains exe files. Use that layer as extraction root."
 
 ## 2) What was done
-- Removed hardcoded `MapleReborn.exe` root detection in archive extraction logic.
+- Removed hardcoded `MapleFireReborn.exe` root detection in archive extraction logic.
 - Implemented generic detection for all `.exe` entries in archive paths (case-insensitive).
 - Determined extraction root from the common parent path of exe-containing directories.
 - Kept current extraction behavior to output into current directory from that detected root.

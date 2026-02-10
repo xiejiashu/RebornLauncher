@@ -21,6 +21,7 @@ private:
     void RunWorker(std::wstring root, std::wstring key, bool encrypt);
     void LoadCachedSettings();
     void SaveCachedSettings();
+    void SyncEncryptUiState();
     void UpdateStatusText(const std::wstring& text);
     void UpdateProgress(int processed, int total);
     void AppendProgressAsync(int processed, int total);
@@ -55,4 +56,5 @@ private:
     int m_processedCount{};
     int m_totalCount{};
     HANDLE m_hWorker{};
+    bool m_isBusy{};
 };

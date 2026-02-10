@@ -600,6 +600,9 @@ void UpdateForgeApp::LoadCachedSettings()
 
     SetWindowTextW(m_editPath, updateDir.c_str());
     SetWindowTextW(m_editKey, keyBuf);
+    const int encryptEnabled = GetPrivateProfileIntW(L"ui", L"encrypt_enabled", 0, iniPath.c_str());
+    SendMessageW(m_chkEncrypt, BM_SETCHECK, encryptEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SyncEncryptUiState();
 }
 
 void UpdateForgeApp::SaveCachedSettings()
@@ -611,6 +614,8 @@ void UpdateForgeApp::SaveCachedSettings()
     GetWindowTextW(m_editKey, keyBuf, static_cast<int>(std::size(keyBuf)));
     WritePrivateProfileStringW(L"ui", L"update_dir", pathBuf, iniPath.c_str());
     WritePrivateProfileStringW(L"ui", L"encrypt_key", keyBuf, iniPath.c_str());
+    const bool encryptEnabled = (SendMessageW(m_chkEncrypt, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    WritePrivateProfileStringW(L"ui", L"encrypt_enabled", encryptEnabled ? L"1" : L"0", iniPath.c_str());
 
     if (!m_hWnd || !IsWindow(m_hWnd))
     {
@@ -633,6 +638,14 @@ void UpdateForgeApp::SaveCachedSettings()
     const std::wstring heightText = std::to_wstring(height);
     WritePrivateProfileStringW(L"ui", L"window_width", widthText.c_str(), iniPath.c_str());
     WritePrivateProfileStringW(L"ui", L"window_height", heightText.c_str(), iniPath.c_str());
+}
+
+void UpdateForgeApp::SyncEncryptUiState()
+{
+    const bool encryptEnabled = (SendMessageW(m_chkEncrypt, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    const BOOL keyEditable = (!m_isBusy && encryptEnabled) ? TRUE : FALSE;
+    EnableWindow(m_editKey, keyEditable);
+    SendMessageW(m_editKey, EM_SETREADONLY, keyEditable ? FALSE : TRUE, 0);
 }
 
 void UpdateForgeApp::LayoutControls(int width, int height)
@@ -943,7 +956,7 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
             item["md5"] = r.md5;
             item["time"] = Json::Int64(r.version);
             item["size"] = Json::Int64(r.size);
-            item["page"] = NarrowACP(r.relPath);
+            item["page"] = WideToUtf8(r.relPath);
             rootJson["file"].append(item);
             if (r.version > latestTime)
                 latestTime = r.version;
@@ -951,7 +964,7 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
         rootJson["time"] = Json::Int64(latestTime);
         for (auto& run : runtimeList)
         {
-            rootJson["runtime"].append(NarrowACP(run));
+            rootJson["runtime"].append(WideToUtf8(run));
         }
         Json::StreamWriterBuilder builder;
         builder["indentation"] = "  ";
@@ -991,15 +1004,16 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
 }
 void UpdateForgeApp::SetBusy(bool busy)
 {
+    m_isBusy = busy;
     EnableWindow(m_btnBrowse, !busy);
     EnableWindow(m_btnGenerate, !busy);
     EnableWindow(m_editPath, !busy);
-    EnableWindow(m_editKey, !busy);
     EnableWindow(m_chkEncrypt, !busy);
     EnableWindow(m_editUrlInput, !busy);
     EnableWindow(m_btnJsonBrowse, !busy);
     EnableWindow(m_btnEncryptUrl, !busy);
     EnableWindow(m_btnDecryptPayload, !busy);
+    SyncEncryptUiState();
 }
 
 void UpdateForgeApp::Log(const std::wstring& text)
@@ -1100,7 +1114,8 @@ LRESULT CALLBACK UpdateForgeApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
             self->OnBrowse();
             break;
         case IDC_CHK_ENCRYPT:
-            // checkbox handled automatically
+            self->SyncEncryptUiState();
+            self->SaveCachedSettings();
             break;
         case IDC_BTN_GENERATE:
             self->OnGenerate();

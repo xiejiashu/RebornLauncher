@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <wincrypt.h>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -69,7 +70,7 @@ std::string FileHash::string_md5(const std::string& str)
 
 std::string FileHash::file_md5(const std::string& filename)
 {
-	std::ifstream ifs(filename, std::ios::binary);
+	std::ifstream ifs(std::filesystem::u8path(filename), std::ios::binary);
 	if (!ifs.is_open()) {
 		return {};
 	}

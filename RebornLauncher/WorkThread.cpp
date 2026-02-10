@@ -710,19 +710,27 @@ DWORD WorkThread::Run()
 					config.m_qwTime = fileJson["time"].asInt64();
 					config.m_qwSize = fileJson["size"].asInt64();
 					config.m_strPage = fileJson["page"].asString();
-					m_mapFiles[config.m_strPage] = config;
-					std::filesystem::path filePath = config.m_strPage;
-					std::string strPath = filePath.parent_path().string();
-
-					if (!strPath.empty() && !std::filesystem::exists(strPath))
-					{
-						std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
+					if (config.m_strPage.empty()) {
+						continue;
 					}
-
-					if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
-					{
-						std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
-						ofs.close();
+					m_mapFiles[config.m_strPage] = config;
+					try {
+						const std::filesystem::path localPath =
+							std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
+						std::error_code ec;
+						const auto parent = localPath.parent_path();
+						if (!parent.empty() && !std::filesystem::exists(parent, ec)) {
+							std::filesystem::create_directories(parent, ec);
+						}
+						ec.clear();
+						if (!std::filesystem::exists(localPath, ec)) {
+							std::ofstream ofs(localPath, std::ios::binary);
+							ofs.close();
+						}
+					}
+					catch (...) {
+						std::cout << "Skip invalid local page path: " << config.m_strPage << std::endl;
+						m_mapFiles.erase(config.m_strPage);
 					}
 				}
 
@@ -940,7 +948,8 @@ bool WorkThread::DownloadRunTimeFile()
 		if (it != m_mapFiles.end())
 		{
 			bool Md5Same = false;
-			if (GetFileAttributesA(strLocalFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
+			std::error_code ec;
+			if (std::filesystem::exists(std::filesystem::u8path(strLocalFile), ec)) {
 				std::string strLocalFileMd5 = FileHash::file_md5(strLocalFile);
 				Md5Same = it->second.m_strMd5 == strLocalFileMd5;
 				std::cout << "md51:" << it->second.m_strMd5 << "vs md52:"<< strLocalFileMd5 << std::endl;
@@ -964,9 +973,15 @@ bool WorkThread::DownloadRunTimeFile()
 #endif
 		}
 
-		// std::filesystem::remove(strLocalFile);
-		SetFileAttributesA(strLocalFile.c_str(), FILE_ATTRIBUTE_NORMAL);
-		DeleteFileA(strLocalFile.c_str());
+		const std::wstring strLocalFileW = str2wstr(strLocalFile);
+		if (!strLocalFileW.empty()) {
+			SetFileAttributesW(strLocalFileW.c_str(), FILE_ATTRIBUTE_NORMAL);
+			DeleteFileW(strLocalFileW.c_str());
+		}
+		else {
+			std::error_code ec;
+			std::filesystem::remove(std::filesystem::u8path(strLocalFile), ec);
+		}
 
 		if (!DownloadWithResume(strPage, strLocalFile)) {
 			std::cout << "Download failed for runtime file: " << strPage << std::endl;
@@ -1660,7 +1675,7 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 			if (p2pOk) {
 				if (m_nCurrentDownloadSize <= 0) {
 					std::error_code ec;
-					const auto size = std::filesystem::file_size(file_path, ec);
+					const auto size = std::filesystem::file_size(std::filesystem::u8path(file_path), ec);
 					if (!ec) {
 						m_nCurrentDownloadSize = static_cast<int>(size);
 					}
@@ -1693,7 +1708,7 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	}
 
 	// Check if the file already exists locally
-	std::ifstream existing_file(file_path, std::ios::binary | std::ios::ate);
+	std::ifstream existing_file(std::filesystem::u8path(file_path), std::ios::binary | std::ios::ate);
 	size_t existing_file_size = 0;
 	if (existing_file.is_open()) {
 		existing_file_size = existing_file.tellg();
@@ -1704,7 +1719,8 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 			return true;
 		}
 		else if (existing_file_size > static_cast<size_t>(m_nCurrentDownloadSize)) {
-			std::filesystem::remove(file_path);
+			std::error_code ec;
+			std::filesystem::remove(std::filesystem::u8path(file_path), ec);
 			existing_file_size = 0;
 		}
 	}
@@ -1718,7 +1734,7 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	}
 
 	// Open file for append
-	std::ofstream file(file_path, std::ios::binary | std::ios::app);
+	std::ofstream file(std::filesystem::u8path(file_path), std::ios::binary | std::ios::app);
 	if (!file.is_open()) {
 		return false;
 	}
@@ -2190,17 +2206,29 @@ bool WorkThread::RefreshRemoteVersionManifest()
 			config.m_qwTime = fileJson["time"].asInt64();
 			config.m_qwSize = fileJson["size"].asInt64();
 			config.m_strPage = fileJson["page"].asString();
-			m_mapFiles[config.m_strPage] = config;
-			std::filesystem::path filePath = config.m_strPage;
-			std::string strPath = filePath.parent_path().string();
-			if (!strPath.empty() && !std::filesystem::exists(strPath))
-			{
-				std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
+			if (config.m_strPage.empty()) {
+				continue;
 			}
-			if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
-			{
-				std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
-				ofs.close();
+			m_mapFiles[config.m_strPage] = config;
+			try {
+				const std::filesystem::path localPath =
+					std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
+				std::error_code ec;
+				const auto parent = localPath.parent_path();
+				if (!parent.empty() && !std::filesystem::exists(parent, ec))
+				{
+					std::filesystem::create_directories(parent, ec);
+				}
+				ec.clear();
+				if (!std::filesystem::exists(localPath, ec))
+				{
+					std::ofstream ofs(localPath, std::ios::binary);
+					ofs.close();
+				}
+			}
+			catch (...) {
+				std::cout << "Skip invalid local page path: " << config.m_strPage << std::endl;
+				m_mapFiles.erase(config.m_strPage);
 			}
 		}
 		m_vecRunTimeList.clear();

@@ -10,6 +10,7 @@ struct P2PSettings {
     bool enabled{ false };
     std::vector<std::string> stunServers;
     std::string signalEndpoint; // full http/https URL for signaling
+    std::string signalAuthToken; // optional bearer/token value for signaling relay
 };
 
 // Lightweight WebRTC P2P helper built on libdatachannel.

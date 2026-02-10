@@ -12,7 +12,13 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <chrono>
+#include <cstdint>
 #include <fstream>
+#include <functional>
+#include <regex>
 #include <sstream>
 #include "Encoding.h"
 
@@ -21,6 +27,9 @@ extern bool g_bRendering;
 extern bool IsProcessRunning(DWORD dwProcessId);
 
 namespace {
+
+constexpr const char* kBootstrapHost = "https://gitee.com";
+constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
 
 std::string NormalizeRelativeUrlPath(std::string path) {
 	std::replace(path.begin(), path.end(), '\\', '/');
@@ -56,6 +65,455 @@ std::string JoinUrlPath(const std::string& basePath, const std::string& childPat
 
 std::string BuildSignalEndpoint(const std::string& baseUrl, const std::string& pagePath) {
 	return baseUrl + JoinUrlPath(pagePath, "signal");
+}
+
+bool IsHttpUrl(const std::string& value) {
+	return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
+}
+
+bool ParseHttpUrl(const std::string& url, bool& useTls, std::string& host, int& port, std::string& path) {
+	std::regex urlRegex(R"((https?)://([^/:]+)(?::(\d+))?(\/.*)?)");
+	std::smatch match;
+	if (!std::regex_match(url, match, urlRegex)) {
+		return false;
+	}
+	useTls = match[1].str() == "https";
+	host = match[2].str();
+	port = match[3].matched ? std::stoi(match[3].str()) : (useTls ? 443 : 80);
+	path = match[4].matched ? match[4].str() : "/";
+	if (path.empty()) {
+		path = "/";
+	}
+	if (path.front() != '/') {
+		path.insert(path.begin(), '/');
+	}
+	return true;
+}
+
+bool ExtractBaseAndPath(const std::string& absoluteUrl, std::string& baseUrl, std::string& path) {
+	bool useTls = false;
+	std::string host;
+	int port = 0;
+	if (!ParseHttpUrl(absoluteUrl, useTls, host, port, path)) {
+		return false;
+	}
+	const bool defaultPort = (useTls && port == 443) || (!useTls && port == 80);
+	baseUrl = (useTls ? "https://" : "http://") + host;
+	if (!defaultPort) {
+		baseUrl += ":" + std::to_string(port);
+	}
+	return true;
+}
+
+std::string TrimAscii(std::string value) {
+	const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+	while (!value.empty() && isSpace(static_cast<unsigned char>(value.front()))) {
+		value.erase(value.begin());
+	}
+	while (!value.empty() && isSpace(static_cast<unsigned char>(value.back()))) {
+		value.pop_back();
+	}
+	return value;
+}
+
+std::string DirnamePath(std::string path) {
+	if (path.empty()) {
+		return "/";
+	}
+	std::replace(path.begin(), path.end(), '\\', '/');
+	const size_t queryPos = path.find('?');
+	if (queryPos != std::string::npos) {
+		path = path.substr(0, queryPos);
+	}
+	size_t slash = path.find_last_of('/');
+	if (slash == std::string::npos) {
+		return "/";
+	}
+	path = path.substr(0, slash + 1);
+	if (path.empty()) {
+		return "/";
+	}
+	if (path.front() != '/') {
+		path.insert(path.begin(), '/');
+	}
+	return path;
+}
+
+std::string GetFileNameFromUrl(std::string url) {
+	const size_t hashPos = url.find('#');
+	if (hashPos != std::string::npos) {
+		url = url.substr(0, hashPos);
+	}
+	const size_t queryPos = url.find('?');
+	if (queryPos != std::string::npos) {
+		url = url.substr(0, queryPos);
+	}
+	std::replace(url.begin(), url.end(), '\\', '/');
+	const size_t slash = url.find_last_of('/');
+	if (slash == std::string::npos) {
+		return url;
+	}
+	if (slash + 1 >= url.size()) {
+		return {};
+	}
+	return url.substr(slash + 1);
+}
+
+bool HexBodyToBytes(const std::string& body, std::string& out) {
+	std::string hex;
+	hex.reserve(body.size());
+	for (unsigned char ch : body) {
+		if (std::isxdigit(ch) != 0) {
+			hex.push_back(static_cast<char>(ch));
+		}
+	}
+	if (hex.empty() || (hex.size() % 2) != 0) {
+		return false;
+	}
+
+	std::string decoded;
+	decoded.reserve(hex.size() / 2);
+	for (size_t i = 0; i < hex.size(); i += 2) {
+		char pair[3] = { hex[i], hex[i + 1], 0 };
+		char* endPtr = nullptr;
+		const long value = strtol(pair, &endPtr, 16);
+		if (endPtr == nullptr || *endPtr != '\0') {
+			return false;
+		}
+		decoded.push_back(static_cast<char>(value & 0xFF));
+	}
+	out = std::move(decoded);
+	return true;
+}
+
+void MergeUnique(std::vector<std::string>& target, const std::vector<std::string>& source) {
+	for (const auto& item : source) {
+		if (item.empty()) {
+			continue;
+		}
+		if (std::find(target.begin(), target.end(), item) == target.end()) {
+			target.push_back(item);
+		}
+	}
+}
+
+std::vector<std::string> ReadStringArray(const Json::Value& parent, const char* key) {
+	std::vector<std::string> values;
+	if (!parent.isMember(key) || !parent[key].isArray()) {
+		return values;
+	}
+	for (const auto& v : parent[key]) {
+		if (v.isString()) {
+			std::string s = TrimAscii(v.asString());
+			if (!s.empty()) {
+				values.push_back(s);
+			}
+		}
+	}
+	return values;
+}
+
+struct ChunkRecord {
+	uint64_t start{ 0 };
+	uint64_t end{ 0 };
+	uint64_t downloaded{ 0 };
+	bool done{ false };
+};
+
+struct ChunkState {
+	std::string url;
+	uint64_t fileSize{ 0 };
+	uint64_t chunkSize{ 0 };
+	std::vector<ChunkRecord> chunks;
+};
+
+uint64_t ComputeDownloadedBytes(const ChunkState& state) {
+	uint64_t total = 0;
+	for (const auto& chunk : state.chunks) {
+		const uint64_t chunkLength = chunk.end >= chunk.start ? (chunk.end - chunk.start + 1) : 0;
+		total += (std::min)(chunk.downloaded, chunkLength);
+	}
+	return total;
+}
+
+bool AreAllChunksDone(const ChunkState& state) {
+	for (const auto& chunk : state.chunks) {
+		if (!chunk.done) {
+			return false;
+		}
+	}
+	return !state.chunks.empty();
+}
+
+void InitializeChunkState(ChunkState& state, const std::string& url, uint64_t fileSize, uint64_t chunkSize) {
+	state.url = url;
+	state.fileSize = fileSize;
+	state.chunkSize = chunkSize;
+	state.chunks.clear();
+	if (fileSize == 0 || chunkSize == 0) {
+		return;
+	}
+
+	for (uint64_t begin = 0; begin < fileSize; begin += chunkSize) {
+		ChunkRecord chunk;
+		chunk.start = begin;
+		chunk.end = (std::min)(fileSize - 1, begin + chunkSize - 1);
+		chunk.downloaded = 0;
+		chunk.done = false;
+		state.chunks.push_back(chunk);
+	}
+}
+
+bool SaveChunkStateToJson(const std::string& statePath, const ChunkState& state) {
+	Json::Value root;
+	root["url"] = state.url;
+	root["file_size"] = Json::UInt64(state.fileSize);
+	root["chunk_size"] = Json::UInt64(state.chunkSize);
+
+	Json::Value chunksJson(Json::arrayValue);
+	for (size_t i = 0; i < state.chunks.size(); ++i) {
+		const auto& chunk = state.chunks[i];
+		Json::Value c;
+		c["id"] = Json::UInt64(i);
+		c["start"] = Json::UInt64(chunk.start);
+		c["end"] = Json::UInt64(chunk.end);
+		c["downloaded"] = Json::UInt64(chunk.downloaded);
+		c["done"] = chunk.done;
+		chunksJson.append(c);
+	}
+	root["chunks"] = chunksJson;
+
+	Json::StreamWriterBuilder builder;
+	builder["indentation"] = "  ";
+	const std::string json = Json::writeString(builder, root);
+
+	const std::string tmpPath = statePath + ".writing";
+	std::ofstream ofs(tmpPath, std::ios::binary | std::ios::trunc);
+	if (!ofs.is_open()) {
+		return false;
+	}
+	ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
+	ofs.close();
+	if (!ofs.good()) {
+		return false;
+	}
+
+	std::error_code ec;
+	std::filesystem::remove(statePath, ec);
+	std::filesystem::rename(tmpPath, statePath, ec);
+	if (ec) {
+		std::filesystem::remove(tmpPath, ec);
+		return false;
+	}
+	return true;
+}
+
+bool LoadChunkStateFromJson(const std::string& statePath, ChunkState& outState) {
+	std::ifstream ifs(statePath, std::ios::binary);
+	if (!ifs.is_open()) {
+		return false;
+	}
+
+	std::stringstream buffer;
+	buffer << ifs.rdbuf();
+	ifs.close();
+
+	Json::CharReaderBuilder builder;
+	std::string errors;
+	Json::Value root;
+	std::istringstream jsonInput(buffer.str());
+	if (!Json::parseFromStream(builder, jsonInput, &root, &errors) || !root.isObject()) {
+		return false;
+	}
+
+	if (!root["url"].isString() || !root["file_size"].isUInt64() || !root["chunk_size"].isUInt64() || !root["chunks"].isArray()) {
+		return false;
+	}
+
+	ChunkState parsed;
+	parsed.url = root["url"].asString();
+	parsed.fileSize = root["file_size"].asUInt64();
+	parsed.chunkSize = root["chunk_size"].asUInt64();
+
+	for (const auto& chunkJson : root["chunks"]) {
+		if (!chunkJson["start"].isUInt64() || !chunkJson["end"].isUInt64() || !chunkJson["downloaded"].isUInt64()) {
+			return false;
+		}
+		ChunkRecord chunk;
+		chunk.start = chunkJson["start"].asUInt64();
+		chunk.end = chunkJson["end"].asUInt64();
+		chunk.downloaded = chunkJson["downloaded"].asUInt64();
+		chunk.done = chunkJson["done"].asBool();
+		parsed.chunks.push_back(chunk);
+	}
+
+	outState = std::move(parsed);
+	return true;
+}
+
+bool EnsureSizedTempFile(const std::string& path, uint64_t fileSize) {
+	std::error_code ec;
+	const bool exists = std::filesystem::exists(path, ec);
+	if (exists) {
+		const uint64_t currentSize = std::filesystem::file_size(path, ec);
+		if (!ec && currentSize == fileSize) {
+			return true;
+		}
+		std::filesystem::remove(path, ec);
+	}
+
+	std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+	if (!ofs.is_open()) {
+		return false;
+	}
+	if (fileSize > 0) {
+		ofs.seekp(static_cast<std::streamoff>(fileSize - 1), std::ios::beg);
+		char zero = 0;
+		ofs.write(&zero, 1);
+	}
+	ofs.close();
+	return ofs.good();
+}
+
+std::string NormalizeArchivePath(std::string path) {
+	std::replace(path.begin(), path.end(), '\\', '/');
+	while (!path.empty() && (path.front() == '/' || path.front() == '.')) {
+		if (path.front() == '.') {
+			if (path.size() >= 2 && path[1] == '/') {
+				path.erase(path.begin(), path.begin() + 2);
+				continue;
+			}
+			break;
+		}
+		path.erase(path.begin());
+	}
+	return path;
+}
+
+std::string GetArchiveParentPath(const std::string& path) {
+	const size_t pos = path.find_last_of('/');
+	if (pos == std::string::npos) {
+		return {};
+	}
+	return path.substr(0, pos);
+}
+
+std::string GetArchiveFileName(const std::string& path) {
+	const size_t pos = path.find_last_of('/');
+	if (pos == std::string::npos) {
+		return path;
+	}
+	return path.substr(pos + 1);
+}
+
+std::vector<std::string> SplitArchivePath(const std::string& path) {
+	std::vector<std::string> parts;
+	size_t start = 0;
+	while (start < path.size()) {
+		size_t slash = path.find('/', start);
+		if (slash == std::string::npos) {
+			slash = path.size();
+		}
+		if (slash > start) {
+			parts.push_back(path.substr(start, slash - start));
+		}
+		start = slash + 1;
+	}
+	return parts;
+}
+
+std::string JoinArchivePath(const std::vector<std::string>& parts) {
+	if (parts.empty()) {
+		return {};
+	}
+	std::string out = parts.front();
+	for (size_t i = 1; i < parts.size(); ++i) {
+		out.push_back('/');
+		out.append(parts[i]);
+	}
+	return out;
+}
+
+std::string GetLowerAscii(std::string value) {
+	for (auto& c : value) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return value;
+}
+
+std::string DetermineExeRootPrefix(const std::vector<DataBlock>& files) {
+	std::vector<std::vector<std::string>> exeParentParts;
+	for (const auto& file : files) {
+		const std::string fileName = GetArchiveFileName(file.filePath);
+		const std::string lowerName = GetLowerAscii(fileName);
+		if (lowerName.size() < 4 || lowerName.substr(lowerName.size() - 4) != ".exe") {
+			continue;
+		}
+
+		const std::string parent = GetArchiveParentPath(file.filePath);
+		if (parent.empty()) {
+			return {};
+		}
+		exeParentParts.push_back(SplitArchivePath(parent));
+	}
+
+	if (exeParentParts.empty()) {
+		return {};
+	}
+
+	std::vector<std::string> common = exeParentParts.front();
+	for (size_t i = 1; i < exeParentParts.size(); ++i) {
+		const auto& parts = exeParentParts[i];
+		size_t commonLen = 0;
+		while (commonLen < common.size() && commonLen < parts.size() && common[commonLen] == parts[commonLen]) {
+			++commonLen;
+		}
+		common.resize(commonLen);
+		if (common.empty()) {
+			break;
+		}
+	}
+
+	return JoinArchivePath(common);
+}
+
+std::string StripArchivePrefix(const std::string& fullPath, const std::string& prefix) {
+	if (prefix.empty()) {
+		return fullPath;
+	}
+	if (fullPath == prefix) {
+		return {};
+	}
+	if (fullPath.size() > prefix.size() &&
+		fullPath.compare(0, prefix.size(), prefix) == 0 &&
+		fullPath[prefix.size()] == '/') {
+		return fullPath.substr(prefix.size() + 1);
+	}
+	return fullPath;
+}
+
+bool MakeSafeRelativePath(const std::string& input, std::string& out) {
+	std::filesystem::path p(input);
+	p = p.lexically_normal();
+	if (p.empty() || p.is_absolute()) {
+		return false;
+	}
+
+	for (const auto& part : p) {
+		const std::string token = part.string();
+		if (token.empty() || token == ".") {
+			continue;
+		}
+		if (token == "..") {
+			return false;
+		}
+	}
+
+	out = p.generic_string();
+	while (!out.empty() && out.front() == '/') {
+		out.erase(out.begin());
+	}
+	return !out.empty();
 }
 
 uint64_t ParseTotalSizeFromResponse(const httplib::Response& response) {
@@ -96,20 +554,20 @@ void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::st
 	);
 
 	if (hFile == INVALID_HANDLE_VALUE) {
-		std::cerr << "无法打开文件 / Failed to open file, error code: " << GetLastError() << std::endl;
+		std::cerr << "Failed to open file, error code: " << GetLastError() << std::endl;
 		return;
 	}
 
 	DWORD dwBytesWritten = 0;
 	if (!WriteFile(hFile, data.c_str(), data.size(), &dwBytesWritten, NULL)) {
-		std::cerr << "无法写入文件 / Failed to write file, error code: " << GetLastError() << std::endl;
+		std::cerr << "Failed to write file, error code: " << GetLastError() << std::endl;
 	}
 
 	CloseHandle(hFile);
 }
 
 
-WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir)
+WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir, const P2PSettings& initialP2PSettings)
 	: m_hMainWnd(hWnd), m_strModulePath(strModulePath), m_strModuleName(strModuleName), m_strModuleDir(strModuleDir)
 	, m_bUpdateSelf(false), m_nTotalDownload(0), m_nCurrentDownload(0), m_nCurrentDownloadSize(0), m_nCurrentDownloadProgress(0)
 	, m_hGameProcess{ nullptr }
@@ -120,8 +578,15 @@ WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::
 	, m_hThread(nullptr)
 	, m_p2pClient(std::make_unique<P2PClient>())
 {
-	m_p2pSettings.enabled = false;
-	m_p2pSettings.stunServers = { "stun:stun.l.google.com:19302", "stun:global.stun.twilio.com:3478", "stun:stun.cloudflare.com:3478" };
+	m_p2pSettings = initialP2PSettings;
+	if (m_p2pSettings.stunServers.empty()) {
+		m_p2pSettings.stunServers = {
+			"stun:stun.l.google.com:19302",
+			"stun:global.stun.twilio.com:3478",
+			"stun:stun.cloudflare.com:3478",
+			"stun:127.0.0.1:3478"
+		};
+	}
 	DWORD dwThreadId = 0;
 	for (auto hFileMapping : m_hFileMappings)
 	{
@@ -184,9 +649,9 @@ DWORD WorkThread::Run()
 	m_strCurrentDir = std::filesystem::current_path().string();
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
-	if (!GetDownloadUrl())
+	if (!FetchBootstrapConfig())
 	{
-		MessageBox(m_hMainWnd, L"获取下载地址失败。 / Failed to get download URL.", L"错误 / Error", MB_OK);
+		MessageBox(m_hMainWnd, L"Failed to fetch bootstrap config.", L"Error", MB_OK);
 		Stop();
 		return 0;
 	}
@@ -208,7 +673,11 @@ DWORD WorkThread::Run()
 	if (!std::filesystem::exists("./Data"))
 	{
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-		DownloadBasePackage();
+		if (!DownloadBasePackage()) {
+			MessageBox(m_hMainWnd, L"Failed to download base package.", L"Error", MB_OK);
+			Stop();
+			return 0;
+		}
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	}
 
@@ -265,8 +734,13 @@ DWORD WorkThread::Run()
 		}
 	}
 
-	GetRemoteVersionFile();
-	DownloadRunTimeFile();
+	RefreshRemoteVersionManifest();
+	if (!DownloadRunTimeFile())
+	{
+		MessageBox(m_hMainWnd, L"Failed to download update files.", L"Error", MB_OK);
+		Stop();
+		return 0;
+	}
 
 	if (m_bUpdateSelf)
 	{
@@ -283,7 +757,7 @@ DWORD WorkThread::Run()
 	WriteDataToMapping();
 
 	unsigned long long dwNewTick = GetTickCount64();
-	std::cout << "写入映射耗时 / WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
+	std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
 	dwTick = dwNewTick;
 
 	STARTUPINFO si = { sizeof(si) };
@@ -296,7 +770,7 @@ DWORD WorkThread::Run()
 	g_bRendering = false;
 
 	dwNewTick = GetTickCount64();
-	std::cout << "创建进程耗时 / CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
+	std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
 
 	m_hGameProcess[0] = pi.hProcess;
 	m_dwGameProcessId[0] = pi.dwProcessId;
@@ -359,7 +833,7 @@ void WorkThread::HandleError(const char* msg) {
 	exit(1);
 }
 
-std::string WorkThread::DecryptUrl(const std::string& ciphertext)
+std::string WorkThread::DecryptConfigPayload(const std::string& ciphertext)
 {
 	HCRYPTPROV hProv;
 	HCRYPTKEY hKey;
@@ -407,22 +881,47 @@ std::string WorkThread::DecryptUrl(const std::string& ciphertext)
 
 std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 {
-	std::string strDict = "KRu998Am";
-	ZSTD_DDict* ddict = ZSTD_createDDict(strDict.c_str(), strDict.length());
-	std::string strCompress = ciphertext;
-	std::string strJson;
+	if (ciphertext.empty()) {
+		return {};
+	}
+
+	const size_t decompressBound = ZSTD_getFrameContentSize(ciphertext.data(), ciphertext.size());
+	if (decompressBound == ZSTD_CONTENTSIZE_ERROR || decompressBound == ZSTD_CONTENTSIZE_UNKNOWN || decompressBound == 0 ||
+		decompressBound > (64ULL * 1024ULL * 1024ULL)) {
+		std::cout << "Invalid Version.dat payload size: " << decompressBound << std::endl;
+		return {};
+	}
+
+	const std::string strDict = "D2Qbzy7hnmLh1zqgmDKx";
+	ZSTD_DDict* ddict = ZSTD_createDDict(strDict.data(), strDict.size());
+	if (!ddict) {
+		return {};
+	}
+
 	ZSTD_DCtx* dctx = ZSTD_createDCtx();
-	size_t decompressBound = ZSTD_getFrameContentSize(strCompress.c_str(), strCompress.length());
+	if (!dctx) {
+		ZSTD_freeDDict(ddict);
+		return {};
+	}
+
+	std::string strJson;
 	strJson.resize(decompressBound);
-	size_t decompressSize = ZSTD_decompress_usingDDict(dctx, &strJson[0], decompressBound, strCompress.c_str(), strCompress.length(), ddict);
-	strJson.resize(decompressSize);
+	const size_t decompressSize = ZSTD_decompress_usingDDict(
+		dctx, &strJson[0], decompressBound, ciphertext.data(), ciphertext.size(), ddict);
+
 	ZSTD_freeDDict(ddict);
 	ZSTD_freeDCtx(dctx);
 
+	if (ZSTD_isError(decompressSize) != 0) {
+		std::cout << "Failed to decompress Version.dat: " << ZSTD_getErrorName(decompressSize) << std::endl;
+		return {};
+	}
+
+	strJson.resize(decompressSize);
 	return strJson;
 }
 
-void WorkThread::DownloadRunTimeFile()
+bool WorkThread::DownloadRunTimeFile()
 {
 	m_nTotalDownload = m_vecRunTimeList.size();
 	m_nCurrentDownload = 0;
@@ -453,8 +952,7 @@ void WorkThread::DownloadRunTimeFile()
 				continue;
 			}
 		}
-		
-		std::cout << __FILE__ << ":" << __LINE__ << " 文件 / File: " << strLocalFile << std::endl;
+		std::cout << __FILE__ << ":" << __LINE__ << " File: " << strLocalFile << std::endl;
 
 		if (strLocalFile.find("RebornLauncher.exe") != std::string::npos)
 		{
@@ -471,12 +969,14 @@ void WorkThread::DownloadRunTimeFile()
 		DeleteFileA(strLocalFile.c_str());
 
 		if (!DownloadWithResume(strPage, strLocalFile)) {
-			std::cout << "Download failed for runtime file / 运行时文件下载失败: " << strPage << std::endl;
+			std::cout << "Download failed for runtime file: " << strPage << std::endl;
+			return false;
 		}
 		m_nCurrentDownload += 1;
 	}
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+	return true;
 }
 
 int WorkThread::GetTotalDownload() const
@@ -511,17 +1011,462 @@ int WorkThread::GetCurrentDownloadProgress() const
 	return m_nCurrentDownloadProgress;
 }
 
-void WorkThread::DownloadBasePackage()
+bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath)
+{
+	bool useTls = false;
+	std::string host;
+	int port = 0;
+	std::string path;
+	if (!ParseHttpUrl(absoluteUrl, useTls, host, port, path)) {
+		return false;
+	}
+
+	auto queryRemoteTotalSize = [&](auto& client) -> uint64_t {
+		httplib::Headers headers;
+		headers.insert({ "Range", "bytes=0-0" });
+		auto metaRes = client.Get(path.c_str(), headers);
+		if (metaRes && (metaRes->status == 200 || metaRes->status == 206)) {
+			return ParseTotalSizeFromResponse(*metaRes);
+		}
+		return 0;
+	};
+
+	uint64_t remoteTotalSize = 0;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+	if (useTls) {
+		httplib::SSLClient client(host, port);
+		client.set_follow_location(true);
+		client.set_connection_timeout(8, 0);
+		client.set_read_timeout(20, 0);
+		remoteTotalSize = queryRemoteTotalSize(client);
+	}
+	else
+#endif
+	{
+		httplib::Client client(host, port);
+		client.set_follow_location(true);
+		client.set_connection_timeout(8, 0);
+		client.set_read_timeout(20, 0);
+		remoteTotalSize = queryRemoteTotalSize(client);
+	}
+
+	if (remoteTotalSize > 0) {
+		m_nCurrentDownloadSize = static_cast<int>(remoteTotalSize);
+	}
+
+	size_t localFileSize = 0;
+	{
+		std::ifstream existingFile(filePath, std::ios::binary | std::ios::ate);
+		if (existingFile.is_open()) {
+			localFileSize = static_cast<size_t>(existingFile.tellg());
+		}
+	}
+
+	if (remoteTotalSize > 0) {
+		if (localFileSize == static_cast<size_t>(remoteTotalSize)) {
+			m_nCurrentDownloadProgress = static_cast<int>(remoteTotalSize);
+			return true;
+		}
+		if (localFileSize > static_cast<size_t>(remoteTotalSize)) {
+			std::error_code ec;
+			std::filesystem::remove(filePath, ec);
+		}
+	}
+
+	std::ofstream file(filePath, std::ios::binary | std::ios::trunc);
+	if (!file.is_open()) {
+		return false;
+	}
+
+	auto onBody = [&](const char* data, size_t dataLength) {
+		file.write(data, static_cast<std::streamsize>(dataLength));
+		m_nCurrentDownloadProgress += static_cast<int>(dataLength);
+		return true;
+	};
+
+	httplib::Result res;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+	if (useTls) {
+		httplib::SSLClient client(host, port);
+		client.set_follow_location(true);
+		client.set_connection_timeout(8, 0);
+		client.set_read_timeout(120, 0);
+		res = client.Get(path.c_str(), onBody);
+	}
+	else
+#endif
+	{
+		httplib::Client client(host, port);
+		client.set_follow_location(true);
+		client.set_connection_timeout(8, 0);
+		client.set_read_timeout(120, 0);
+		res = client.Get(path.c_str(), onBody);
+	}
+
+	file.close();
+	if (!res || (res->status != 200 && res->status != 206)) {
+		return false;
+	}
+
+	const auto total = ParseTotalSizeFromResponse(*res);
+	if (total > 0) {
+		m_nCurrentDownloadSize = static_cast<int>(total);
+	}
+	return true;
+}
+
+bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount)
+{
+	bool useTls = false;
+	std::string host;
+	int port = 0;
+	std::string path;
+	if (!ParseHttpUrl(absoluteUrl, useTls, host, port, path)) {
+		return false;
+	}
+
+	auto queryRemoteTotalSize = [&](uint64_t& sizeOut) -> bool {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+		if (useTls) {
+			httplib::SSLClient client(host, port);
+			client.set_follow_location(true);
+			client.set_connection_timeout(8, 0);
+			client.set_read_timeout(30, 0);
+			httplib::Headers headers;
+			headers.insert({ "Range", "bytes=0-0" });
+			auto res = client.Get(path.c_str(), headers);
+			if (!res || (res->status != 200 && res->status != 206)) {
+				return false;
+			}
+			sizeOut = ParseTotalSizeFromResponse(*res);
+			return sizeOut > 0;
+		}
+		else
+#endif
+		{
+			httplib::Client client(host, port);
+			client.set_follow_location(true);
+			client.set_connection_timeout(8, 0);
+			client.set_read_timeout(30, 0);
+			httplib::Headers headers;
+			headers.insert({ "Range", "bytes=0-0" });
+			auto res = client.Get(path.c_str(), headers);
+			if (!res || (res->status != 200 && res->status != 206)) {
+				return false;
+			}
+			sizeOut = ParseTotalSizeFromResponse(*res);
+			return sizeOut > 0;
+		}
+	};
+
+	uint64_t remoteTotalSize = 0;
+	if (!queryRemoteTotalSize(remoteTotalSize) || remoteTotalSize == 0) {
+		return false;
+	}
+
+	m_nCurrentDownloadSize = static_cast<int>(remoteTotalSize);
+
+	{
+		std::error_code ec;
+		if (std::filesystem::exists(filePath, ec)) {
+			const uint64_t localSize = std::filesystem::file_size(filePath, ec);
+			if (!ec && localSize == remoteTotalSize) {
+				m_nCurrentDownloadProgress = static_cast<int>(remoteTotalSize);
+				return true;
+			}
+		}
+	}
+
+	const std::string tmpPath = filePath + ".tmp";
+	const std::string statePath = filePath + ".chunks.json";
+	const uint64_t chunkSize = 8ULL * 1024ULL * 1024ULL;
+	threadCount = (std::max<size_t>)(1, threadCount);
+
+	ChunkState state;
+	bool loadedState = LoadChunkStateFromJson(statePath, state);
+	const bool stateMismatch = !loadedState
+		|| state.url != absoluteUrl
+		|| state.fileSize != remoteTotalSize
+		|| state.chunkSize != chunkSize
+		|| state.chunks.empty();
+	if (stateMismatch) {
+		InitializeChunkState(state, absoluteUrl, remoteTotalSize, chunkSize);
+	}
+
+	for (auto& chunk : state.chunks) {
+		const uint64_t chunkLength = chunk.end >= chunk.start ? (chunk.end - chunk.start + 1) : 0;
+		if (chunk.downloaded >= chunkLength) {
+			chunk.downloaded = chunkLength;
+			chunk.done = true;
+		}
+	}
+
+	if (!EnsureSizedTempFile(tmpPath, remoteTotalSize)) {
+		return false;
+	}
+
+	{
+		ChunkState snapshot = state;
+		SaveChunkStateToJson(statePath, snapshot);
+	}
+
+	std::fstream tmpFile(tmpPath, std::ios::binary | std::ios::in | std::ios::out);
+	if (!tmpFile.is_open()) {
+		return false;
+	}
+
+	std::mutex writeMutex;
+	std::mutex stateMutex;
+	const uint64_t initialDownloaded = ComputeDownloadedBytes(state);
+	std::atomic<uint64_t> downloadedTotal{ initialDownloaded };
+	m_nCurrentDownloadProgress = static_cast<int>((std::min)(downloadedTotal.load(), remoteTotalSize));
+
+	auto persistState = [&]() {
+		ChunkState snapshot;
+		{
+			std::lock_guard<std::mutex> lock(stateMutex);
+			snapshot = state;
+		}
+		SaveChunkStateToJson(statePath, snapshot);
+	};
+
+	std::atomic<bool> failed{ false };
+
+	auto setFailure = [&](const std::string&) {
+		bool expected = false;
+		failed.compare_exchange_strong(expected, true);
+	};
+
+	auto worker = [&](size_t workerId) {
+		for (size_t chunkIndex = workerId; chunkIndex < state.chunks.size(); chunkIndex += threadCount) {
+			if (failed.load()) {
+				return;
+			}
+
+			int attempt = 0;
+			while (attempt < 4 && !failed.load()) {
+				uint64_t chunkStart = 0;
+				uint64_t chunkEnd = 0;
+				uint64_t chunkDownloaded = 0;
+				bool chunkDone = false;
+				{
+					std::lock_guard<std::mutex> lock(stateMutex);
+					const auto& chunk = state.chunks[chunkIndex];
+					chunkStart = chunk.start;
+					chunkEnd = chunk.end;
+					chunkDownloaded = chunk.downloaded;
+					chunkDone = chunk.done;
+				}
+
+				if (chunkDone) {
+					break;
+				}
+
+				if (chunkEnd < chunkStart) {
+					setFailure("Invalid chunk range.");
+					return;
+				}
+
+				const uint64_t chunkLength = chunkEnd - chunkStart + 1;
+				if (chunkDownloaded >= chunkLength) {
+					{
+						std::lock_guard<std::mutex> lock(stateMutex);
+						auto& chunk = state.chunks[chunkIndex];
+						chunk.downloaded = chunkLength;
+						chunk.done = true;
+					}
+					persistState();
+					break;
+				}
+
+				const uint64_t requestStart = chunkStart + chunkDownloaded;
+				const uint64_t requestEnd = chunkEnd;
+				uint64_t writeOffset = requestStart;
+				uint64_t receivedThisAttempt = 0;
+
+				httplib::Headers headers;
+				headers.insert({ "Range", "bytes=" + std::to_string(requestStart) + "-" + std::to_string(requestEnd) });
+
+				auto receiver = [&](const char* data, size_t dataLength) {
+					if (dataLength == 0) {
+						return true;
+					}
+
+					{
+						std::lock_guard<std::mutex> lock(writeMutex);
+						tmpFile.seekp(static_cast<std::streamoff>(writeOffset), std::ios::beg);
+						if (!tmpFile.good()) {
+							return false;
+						}
+						tmpFile.write(data, static_cast<std::streamsize>(dataLength));
+						if (!tmpFile.good()) {
+							return false;
+						}
+					}
+
+					writeOffset += static_cast<uint64_t>(dataLength);
+					receivedThisAttempt += static_cast<uint64_t>(dataLength);
+
+					{
+						std::lock_guard<std::mutex> lock(stateMutex);
+						auto& chunk = state.chunks[chunkIndex];
+						const uint64_t remaining = chunkLength - chunk.downloaded;
+						const uint64_t committed = (std::min)(remaining, static_cast<uint64_t>(dataLength));
+						chunk.downloaded += committed;
+						if (chunk.downloaded >= chunkLength) {
+							chunk.downloaded = chunkLength;
+							chunk.done = true;
+						}
+						const uint64_t totalDone = downloadedTotal.fetch_add(committed) + committed;
+						m_nCurrentDownloadProgress = static_cast<int>((std::min)(totalDone, remoteTotalSize));
+					}
+
+					return true;
+				};
+
+				httplib::Result res;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+				if (useTls) {
+					httplib::SSLClient client(host, port);
+					client.set_follow_location(true);
+					client.set_connection_timeout(8, 0);
+					client.set_read_timeout(120, 0);
+					res = client.Get(path.c_str(), headers, receiver);
+				}
+				else
+#endif
+				{
+					httplib::Client client(host, port);
+					client.set_follow_location(true);
+					client.set_connection_timeout(8, 0);
+					client.set_read_timeout(120, 0);
+					res = client.Get(path.c_str(), headers, receiver);
+				}
+
+				persistState();
+
+				if (!res || (res->status != 206 && res->status != 200)) {
+					++attempt;
+					continue;
+				}
+
+				if (res->status == 200 && !(requestStart == 0 && requestEnd + 1 == remoteTotalSize)) {
+					setFailure("Server does not support ranged chunk download.");
+					return;
+				}
+
+				bool doneNow = false;
+				{
+					std::lock_guard<std::mutex> lock(stateMutex);
+					doneNow = state.chunks[chunkIndex].done;
+				}
+				if (doneNow) {
+					break;
+				}
+				if (receivedThisAttempt == 0) {
+					++attempt;
+					continue;
+				}
+			}
+
+			bool doneFinally = false;
+			{
+				std::lock_guard<std::mutex> lock(stateMutex);
+				doneFinally = state.chunks[chunkIndex].done;
+			}
+			if (!doneFinally) {
+				setFailure("Chunk download retries exceeded.");
+				return;
+			}
+		}
+	};
+
+	const size_t actualThreads = (std::min)(threadCount, state.chunks.size());
+	std::vector<std::thread> workers;
+	workers.reserve(actualThreads);
+	for (size_t i = 0; i < actualThreads; ++i) {
+		workers.emplace_back(worker, i);
+	}
+	for (auto& t : workers) {
+		if (t.joinable()) {
+			t.join();
+		}
+	}
+
+	persistState();
+	tmpFile.close();
+
+	if (failed.load()) {
+		return false;
+	}
+
+	ChunkState finalState;
+	{
+		std::lock_guard<std::mutex> lock(stateMutex);
+		finalState = state;
+	}
+	if (!AreAllChunksDone(finalState)) {
+		return false;
+	}
+
+	std::error_code ec;
+	std::filesystem::remove(filePath, ec);
+	std::filesystem::rename(tmpPath, filePath, ec);
+	if (ec) {
+		return false;
+	}
+	std::filesystem::remove(statePath, ec);
+	m_nCurrentDownloadProgress = static_cast<int>(remoteTotalSize);
+	return true;
+}
+
+bool WorkThread::DownloadBasePackage()
 {
 	m_nTotalDownload = 1;
 	m_nCurrentDownload = 0;
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	const std::string strBasePackagePath = JoinUrlPath(m_strPage, "MapleReborn.7z");
-	while (!DownloadWithResume(strBasePackagePath, "MapleReborn.7z"));
+
+	if (m_basePackageUrls.empty()) {
+		std::cout << "Bootstrap config missing base_package_urls/base_package_url." << std::endl;
+		return false;
+	}
+
+	bool downloaded = false;
+	std::string downloadedArchivePath;
+	for (const auto& packageUrl : m_basePackageUrls) {
+		std::string absolutePackageUrl = packageUrl;
+		if (!IsHttpUrl(absolutePackageUrl)) {
+			absolutePackageUrl = m_strUrl + NormalizeRelativeUrlPath(packageUrl);
+		}
+		std::string localArchivePath = GetFileNameFromUrl(absolutePackageUrl);
+		if (localArchivePath.empty()) {
+			localArchivePath = "base_package.7z";
+		}
+
+		for (int attempt = 0; attempt < 2; ++attempt) {
+			m_nCurrentDownloadProgress = 0;
+			m_nCurrentDownloadSize = 0;
+			downloaded = DownloadFileChunkedWithResume(absolutePackageUrl, localArchivePath, 2);
+			if (downloaded) {
+				downloadedArchivePath = localArchivePath;
+				break;
+			}
+		}
+		if (downloaded) {
+			break;
+		}
+	}
+
+	if (!downloaded) {
+		std::cout << "Base package download failed for all candidates." << std::endl;
+		return false;
+	}
+
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	Extract7z("MapleReborn.7z", "./");
+	Extract7z(downloadedArchivePath, "./");
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	std::filesystem::remove("MapleReborn.7z");
+	std::filesystem::remove(downloadedArchivePath);
+	return true;
 }
 
 void WorkThread::Extract7z(const std::string& filename, const std::string& destPath)
@@ -531,31 +1476,38 @@ void WorkThread::Extract7z(const std::string& filename, const std::string& destP
 	// Total file count
 	m_nCurrentDownloadSize = allFiles.size();
 	m_nCurrentDownloadProgress = 0;
+	if (m_nCurrentDownloadSize > 0)
+	{
+		// Determine thread count; ensure at least one worker.
+		const unsigned int hwThreads = std::thread::hardware_concurrency();
+		const size_t preferredThreads = hwThreads == 0 ? 1 : static_cast<size_t>(hwThreads);
+		const size_t numThreads = (std::min)(preferredThreads, allFiles.size());
+		const size_t filesPerThread = (allFiles.size() + numThreads - 1) / numThreads;
 
-	// Determine the number of threads
-	int numThreads = std::min<int>(std::thread::hardware_concurrency(), allFiles.size());
-	size_t filesPerThread = allFiles.size() / numThreads;
-	// size_t remainingFiles = allFiles.size() % numThreads;
-
-	std::vector<std::thread> threads;
-	for (int i = 0; i < numThreads; ++i) {
-		size_t start = i * filesPerThread;
-		size_t end = (i == numThreads - 1) ? allFiles.size() : (i + 1) * filesPerThread;
-		//if (i == numThreads - 1) {
-		//	end += remainingFiles; // Add the remaining files to the last thread
-		//}
-		std::vector<DataBlock> files(allFiles.begin() + start, allFiles.begin() + end);
-		threads.emplace_back(&WorkThread::ExtractFiles, this, filename, destPath, files);
-	}
-
-	// Wait for all threads to complete
-	for (auto& t : threads) {
-		if (t.joinable()) {
-			t.join();
+		std::vector<std::thread> threads;
+		for (size_t i = 0; i < numThreads; ++i) {
+			size_t start = i * filesPerThread;
+			size_t end = (i == numThreads - 1) ? allFiles.size() : (i + 1) * filesPerThread;
+			if (start >= end) {
+				continue;
+			}
+			std::vector<DataBlock> files(allFiles.begin() + start, allFiles.begin() + end);
+			threads.emplace_back(&WorkThread::ExtractFiles, this, filename, destPath, files);
 		}
-	}
 
-	std::cout << filename << " extraction completed" << std::endl;
+		// Wait for all threads to complete
+		for (auto& t : threads) {
+			if (t.joinable()) {
+				t.join();
+			}
+		}
+
+		std::cout << filename << " extraction completed" << std::endl;
+	}
+	else
+	{
+		std::cout << filename << " is empty, no files to extract" << std::endl;
+	}
 }
 
 // Scan archive file and get list of file info
@@ -576,8 +1528,22 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 
 	// Scan each file
 	while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+		const char* entryPath = archive_entry_pathname(entry);
+		if (entryPath == nullptr || entryPath[0] == '\0') {
+			archive_read_data_skip(a);
+			continue;
+		}
+		if (archive_entry_filetype(entry) != AE_IFREG) {
+			archive_read_data_skip(a);
+			continue;
+		}
+
 		DataBlock fileInfo;
-		fileInfo.filePath = archive_entry_pathname(entry);
+		fileInfo.filePath = NormalizeArchivePath(entryPath);
+		if (fileInfo.filePath.empty()) {
+			archive_read_data_skip(a);
+			continue;
+		}
 		fileInfo.fileOffset = archive_read_header_position(a);
 		files.push_back(fileInfo);
 		archive_read_data_skip(a); // Skip file data, only read header info
@@ -585,6 +1551,16 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 
 	archive_read_close(a);
 	archive_read_free(a);
+
+	const std::string extractRootPrefix = DetermineExeRootPrefix(files);
+
+	if (!extractRootPrefix.empty()) {
+		m_extractRootPrefix = extractRootPrefix;
+	}
+	else {
+		m_extractRootPrefix.clear();
+	}
+
 	return files;
 }
 
@@ -592,6 +1568,7 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 void WorkThread::ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files) {
 	struct archive* a;
 	struct archive_entry* entry;
+	const std::string extractRootPrefix = m_extractRootPrefix;
 	a = archive_read_new();
 	archive_read_support_format_7zip(a);
 	archive_read_support_filter_all(a);
@@ -604,14 +1581,40 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 
 		for (const auto& fileInfo : files) {
 			while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
-				if (fileInfo.filePath == archive_entry_pathname(entry)) {
-					std::string outputPath = outPath + "/" + fileInfo.filePath;
+				const char* entryPath = archive_entry_pathname(entry);
+				if (entryPath == nullptr || entryPath[0] == '\0') {
+					archive_read_data_skip(a);
+					continue;
+				}
+				if (archive_entry_filetype(entry) != AE_IFREG) {
+					archive_read_data_skip(a);
+					continue;
+				}
+				const std::string normalizedEntryPath = NormalizeArchivePath(entryPath);
+				if (fileInfo.filePath == normalizedEntryPath) {
+					std::string relativePath = StripArchivePrefix(normalizedEntryPath, extractRootPrefix);
+					relativePath = NormalizeArchivePath(relativePath);
+					if (relativePath.empty()) {
+						relativePath = GetArchiveFileName(normalizedEntryPath);
+					}
+
+					std::string safeRelativePath;
+					if (!MakeSafeRelativePath(relativePath, safeRelativePath)) {
+						archive_read_data_skip(a);
+						break;
+					}
+
+					std::string outputPath = outPath + "/" + safeRelativePath;
 					std::filesystem::path filePath = outputPath;
 					if (!std::filesystem::exists(filePath.parent_path()))
 					{
 						std::filesystem::create_directories(filePath.parent_path());
 					}
 					std::ofstream outputFile(outputPath, std::ios::binary);
+					if (!outputFile.is_open()) {
+						std::cerr << "Failed to create output file: " << outputPath << std::endl;
+						break;
+					}
 
 					const void* buffer;
 					size_t size;
@@ -791,9 +1794,13 @@ svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res
 
 		std::cout << "RunClient request" << std::endl;
 
-		GetRemoteVersionFile();
+		RefreshRemoteVersionManifest();
 		// Download runtime files before launching clients
-		DownloadRunTimeFile();
+		if (!DownloadRunTimeFile()) {
+			res.status = 502;
+			res.set_content("Update download failed.", "text/plain");
+			return;
+		}
 
 		bool launched = false;
 		for (int i = 0; i < static_cast<int>(sizeof(m_dwGameProcessId) / sizeof(m_dwGameProcessId[0])); ++i)
@@ -892,93 +1899,316 @@ P2PSettings WorkThread::GetP2PSettings() const
 	return m_p2pSettings;
 }
 
-bool WorkThread::GetDownloadUrl()
+bool WorkThread::FetchBootstrapConfig()
 {
-	std::cout << __FILE__<<":"<<__LINE__ << std::endl;
-	auto ExtractUrlParts = [](const std::string& url, std::string& baseUrl, std::string& page) {
-		std::regex urlRegex(R"((https?://[^/]+)(/.*))");
-		std::smatch match;
-		if (std::regex_match(url, match, urlRegex)) {
-			if (match.size() == 3) {
-				baseUrl = match[1].str();
-				page = match[2].str();
-			}
-		}
-	};
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	httplib::Client cli{ "https://gitee.com" };
-	auto res = cli.Get("/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt");
-	if (res && res->status == 200) {
-		std::string ciphertext;
-		for (size_t i = 0; i < res->body.size(); i += 2) {
-			char hex[3] = { res->body[i], res->body[i + 1], 0 };
-			ciphertext += (char)strtol(hex, NULL, 16);
-		}
-		std::string strVersionDatUrl = DecryptUrl(ciphertext);
-		ExtractUrlParts(strVersionDatUrl, m_strUrl, m_strPage);
-		m_strPage.push_back('/');
-		return true;
-	}
-	else {
+	std::cout << "FetchBootstrapConfig" << std::endl;
+	httplib::Client cli{ kBootstrapHost };
+	auto res = cli.Get(kBootstrapPath);
+	if (!res || res->status != 200) {
 		if (res) {
-			std::cout << "获取下载地址失败，状态码 / Failed to get download URL, status code: " << res->status << std::endl;
+			std::cout << "Failed to fetch bootstrap payload, status: " << res->status << std::endl;
 		}
 		else {
-			std::cout << "获取下载地址失败，未知HTTP错误 / Failed to get download URL, unknown HTTP error: " << res.error() << std::endl;
+			std::cout << "Failed to fetch bootstrap payload, http error: " << res.error() << std::endl;
+		}
+		return false;
+	}
+
+	std::string ciphertext;
+	if (!HexBodyToBytes(res->body, ciphertext)) {
+		ciphertext = res->body;
+	}
+	const std::string decrypted = DecryptConfigPayload(ciphertext);
+
+	Json::Value root;
+	Json::Reader reader;
+	if (!reader.parse(decrypted, root) || !root.isObject()) {
+		std::cout << "Bootstrap payload is not valid JSON." << std::endl;
+		return false;
+	}
+
+	Json::Value content = root["content"];
+	if (!content.isObject()) {
+		content = root["download"];
+	}
+	if (!content.isObject()) {
+		std::cout << "Bootstrap JSON missing content/download object." << std::endl;
+		return false;
+	}
+
+	std::string versionManifestUrl = TrimAscii(content["version_manifest_url"].asString());
+	if (versionManifestUrl.empty()) {
+		versionManifestUrl = TrimAscii(content["version_dat_url"].asString());
+	}
+	if (versionManifestUrl.empty()) {
+		std::cout << "Bootstrap JSON missing version_manifest_url." << std::endl;
+		return false;
+	}
+
+	std::string updateRootUrl = TrimAscii(content["update_package_root_url"].asString());
+	if (updateRootUrl.empty()) {
+		updateRootUrl = TrimAscii(content["runtime_root_url"].asString());
+	}
+	if (updateRootUrl.empty()) {
+		updateRootUrl = TrimAscii(content["update_root_url"].asString());
+	}
+
+	m_basePackageUrls = ReadStringArray(content, "base_package_urls");
+	if (m_basePackageUrls.empty()) {
+		const std::string singleBasePackageUrl = TrimAscii(content["base_package_url"].asString());
+		if (!singleBasePackageUrl.empty()) {
+			m_basePackageUrls.push_back(singleBasePackageUrl);
 		}
 	}
-	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	return false;
+
+	std::string versionBaseUrl;
+	std::string versionPath;
+	const bool versionManifestIsAbsolute = IsHttpUrl(versionManifestUrl);
+	if (versionManifestIsAbsolute) {
+		if (!ExtractBaseAndPath(versionManifestUrl, versionBaseUrl, versionPath)) {
+			std::cout << "Invalid version_manifest_url: " << versionManifestUrl << std::endl;
+			return false;
+		}
+		m_strVersionManifestPath = versionManifestUrl;
+	}
+
+	if (!updateRootUrl.empty() && IsHttpUrl(updateRootUrl)) {
+		if (!ExtractBaseAndPath(updateRootUrl, m_strUrl, m_strPage)) {
+			std::cout << "Invalid update_package_root_url: " << updateRootUrl << std::endl;
+			return false;
+		}
+	}
+	else if (!updateRootUrl.empty()) {
+		if (!versionBaseUrl.empty()) {
+			m_strUrl = versionBaseUrl;
+		}
+		else if (m_strUrl.empty()) {
+			std::cout << "Relative update_package_root_url requires absolute version_manifest_url." << std::endl;
+			return false;
+		}
+		m_strPage = NormalizeRelativeUrlPath(updateRootUrl);
+		if (m_strPage.back() != '/') {
+			m_strPage.push_back('/');
+		}
+	}
+	else if (!versionBaseUrl.empty()) {
+		m_strUrl = versionBaseUrl;
+		m_strPage = DirnamePath(versionPath);
+	}
+	else {
+		std::cout << "Bootstrap JSON cannot resolve download host/path." << std::endl;
+		return false;
+	}
+
+	if (m_strPage.empty()) {
+		m_strPage = "/";
+	}
+	if (m_strPage.front() != '/') {
+		m_strPage.insert(m_strPage.begin(), '/');
+	}
+	if (m_strPage.back() != '/') {
+		m_strPage.push_back('/');
+	}
+	if (!versionManifestIsAbsolute) {
+		const bool rootedPath = !versionManifestUrl.empty() &&
+			(versionManifestUrl.front() == '/' || versionManifestUrl.front() == '\\');
+		if (rootedPath) {
+			m_strVersionManifestPath = NormalizeRelativeUrlPath(versionManifestUrl);
+		}
+		else {
+			m_strVersionManifestPath = JoinUrlPath(m_strPage, versionManifestUrl);
+		}
+	}
+	if (m_strVersionManifestPath.empty()) {
+		m_strVersionManifestPath = JoinUrlPath(m_strPage, "Version.dat");
+	}
+
+	if (m_basePackageUrls.empty()) {
+		std::cout << "Bootstrap JSON missing base_package_urls/base_package_url." << std::endl;
+		return false;
+	}
+
+	Json::Value p2pJson = root["p2p"];
+	if (p2pJson.isObject()) {
+		std::lock_guard<std::mutex> lock(m_p2pMutex);
+
+		const std::string signalUrl = TrimAscii(p2pJson["signal_url"].asString());
+		if (!signalUrl.empty() && m_p2pSettings.signalEndpoint.empty()) {
+			m_p2pSettings.signalEndpoint = signalUrl;
+		}
+
+		const std::string signalToken = TrimAscii(p2pJson["signal_auth_token"].asString());
+		if (!signalToken.empty() && m_p2pSettings.signalAuthToken.empty()) {
+			m_p2pSettings.signalAuthToken = signalToken;
+		}
+
+		auto remoteStuns = ReadStringArray(p2pJson, "stun_servers");
+		if (!remoteStuns.empty()) {
+			MergeUnique(remoteStuns, m_p2pSettings.stunServers);
+			m_p2pSettings.stunServers = std::move(remoteStuns);
+		}
+	}
+
+	std::cout << "Bootstrap resolved: host=" << m_strUrl
+		<< " updateRoot=" << m_strPage
+		<< " versionPath=" << m_strVersionManifestPath << std::endl;
+	return true;
 }
 
-bool WorkThread::GetRemoteVersionFile()
+bool WorkThread::RefreshRemoteVersionManifest()
 {
-	const std::string strVersionDatPath = JoinUrlPath(m_strPage, "Version.dat");
-	auto res = m_client->Get(strVersionDatPath);
-	if (res && res->status == 200) {
-		const std::string strVersionDatContent = DecryptVersionDat(res->body);
-		Json::Value root;
-		Json::Reader reader;
-		if (reader.parse(strVersionDatContent, root)) {
-			std::string strRemoteVersionDatMd5 = FileHash::string_md5(res->body);
-			if (strRemoteVersionDatMd5 != m_strLocalVersionMD5)
+	const std::string strVersionDatPath = m_strVersionManifestPath.empty()
+		? JoinUrlPath(m_strPage, "Version.dat")
+		: m_strVersionManifestPath;
+
+	auto fetchManifest = [this](const std::string& requestTarget) -> httplib::Result {
+		httplib::Headers headers;
+		headers.insert({ "Accept", "application/octet-stream" });
+		headers.insert({ "Cache-Control", "no-cache" });
+
+		if (IsHttpUrl(requestTarget)) {
+			bool useTls = false;
+			std::string host;
+			int port = 0;
+			std::string path;
+			if (!ParseHttpUrl(requestTarget, useTls, host, port, path)) {
+				return httplib::Result();
+			}
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+			if (useTls) {
+				httplib::SSLClient client(host, port);
+				client.set_follow_location(true);
+				client.set_connection_timeout(8, 0);
+				client.set_read_timeout(60, 0);
+				return client.Get(path.c_str(), headers);
+			}
+			else
+#endif
 			{
-				std::ofstream ofs("Version.dat", std::ios::binary);
-				ofs.write(res->body.data(), res->body.size());
-				ofs.close();
+				httplib::Client client(host, port);
+				client.set_follow_location(true);
+				client.set_connection_timeout(8, 0);
+				client.set_read_timeout(60, 0);
+				return client.Get(path.c_str(), headers);
+			}
+		}
 
-				m_qwVersion = root["time"].asInt64();
-				m_mapFiles.clear();
-				Json::Value filesJson = root["file"];
-				for (auto& fileJson : filesJson) {
-					VersionConfig config;
-					config.m_strMd5 = fileJson["md5"].asString();
-					config.m_qwTime = fileJson["time"].asInt64();
-					config.m_qwSize = fileJson["size"].asInt64();
-					config.m_strPage = fileJson["page"].asString();
-					m_mapFiles[config.m_strPage] = config;
-					std::filesystem::path filePath = config.m_strPage;
-					std::string strPath = filePath.parent_path().string();
-					if (!strPath.empty() && !std::filesystem::exists(strPath))
-					{
-						std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
-					}
+		if (!m_client) {
+			return httplib::Result();
+		}
+		return m_client->Get(requestTarget.c_str(), headers);
+	};
 
-					if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
-					{
-						std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
-						ofs.close();
-					}
+	httplib::Result res = fetchManifest(strVersionDatPath);
+	std::string resolvedPath = strVersionDatPath;
+
+	if ((!res || res->status != 200 || res->body.empty()) && !IsHttpUrl(strVersionDatPath)) {
+		const std::string fileName = GetFileNameFromUrl(strVersionDatPath);
+		const std::string fallbackPath = JoinUrlPath(m_strPage, fileName.empty() ? "Version.dat" : fileName);
+		if (fallbackPath != strVersionDatPath) {
+			httplib::Result fallbackRes = fetchManifest(fallbackPath);
+			if (fallbackRes && fallbackRes->status == 200 && !fallbackRes->body.empty()) {
+				res = std::move(fallbackRes);
+				resolvedPath = fallbackPath;
+				m_strVersionManifestPath = fallbackPath;
+			}
+		}
+	}
+
+	if (!res || res->status != 200) {
+		const std::string statusText = res ? std::to_string(res->status) : std::string("none");
+		const int errorCode = static_cast<int>(res.error());
+		std::cout << "Failed to fetch Version.dat from " << resolvedPath
+			<< ", status: " << statusText
+			<< ", error: " << errorCode
+			<< std::endl;
+		return false;
+	}
+	if (res->body.empty()) {
+		std::cout << "Version.dat response body is empty, path: " << resolvedPath << std::endl;
+		return false;
+	}
+
+	auto parseJsonObject = [](const std::string& text, Json::Value& out) -> bool {
+		Json::CharReaderBuilder builder;
+		std::string errors;
+		std::istringstream iss(text);
+		return Json::parseFromStream(builder, iss, &out, &errors) && out.isObject();
+	};
+
+	std::string manifestBinary = res->body;
+	std::string manifestJsonText;
+	Json::Value root;
+
+	// New format: plain JSON body from UpdateForge.
+	if (parseJsonObject(manifestBinary, root)) {
+		manifestJsonText = manifestBinary;
+	}
+	else {
+		// Legacy format: zstd-compressed Version.dat payload.
+		const std::string decompressed = DecryptVersionDat(manifestBinary);
+		if (!decompressed.empty() && parseJsonObject(decompressed, root)) {
+			manifestJsonText = decompressed;
+		}
+		else {
+			// Compatibility: if payload was hex-encoded text, decode once then retry.
+			std::string decoded;
+			if (HexBodyToBytes(manifestBinary, decoded)) {
+				if (parseJsonObject(decoded, root)) {
+					manifestBinary = decoded;
+					manifestJsonText = decoded;
 				}
-
-				m_vecRunTimeList.clear();
-
-				Json::Value downloadList = root["runtime"];
-				for (auto& download : downloadList) {
-					m_vecRunTimeList.push_back(download.asString());
+				else {
+					const std::string decodedDecompressed = DecryptVersionDat(decoded);
+					if (!decodedDecompressed.empty() && parseJsonObject(decodedDecompressed, root)) {
+						manifestBinary = decoded;
+						manifestJsonText = decodedDecompressed;
+					}
 				}
 			}
 		}
 	}
+
+	if (manifestJsonText.empty()) {
+		std::cout << "Version.dat format not supported, path: " << resolvedPath
+			<< ", body_size: " << res->body.size() << std::endl;
+		return false;
+	}
+
+	std::string strRemoteVersionDatMd5 = FileHash::string_md5(manifestBinary);
+	if (strRemoteVersionDatMd5 != m_strLocalVersionMD5)
+	{
+		std::ofstream ofs("Version.dat", std::ios::binary);
+		ofs.write(manifestBinary.data(), manifestBinary.size());
+		ofs.close();
+		m_qwVersion = root["time"].asInt64();
+		m_mapFiles.clear();
+		Json::Value filesJson = root["file"];
+		for (auto& fileJson : filesJson) {
+			VersionConfig config;
+			config.m_strMd5 = fileJson["md5"].asString();
+			config.m_qwTime = fileJson["time"].asInt64();
+			config.m_qwSize = fileJson["size"].asInt64();
+			config.m_strPage = fileJson["page"].asString();
+			m_mapFiles[config.m_strPage] = config;
+			std::filesystem::path filePath = config.m_strPage;
+			std::string strPath = filePath.parent_path().string();
+			if (!strPath.empty() && !std::filesystem::exists(strPath))
+			{
+				std::filesystem::create_directories(m_strCurrentDir + "\\" + strPath);
+			}
+			if (std::filesystem::exists(m_strCurrentDir + "\\" + config.m_strPage) == false)
+			{
+				std::ofstream ofs(m_strCurrentDir + "\\" + config.m_strPage, std::ios::binary);
+				ofs.close();
+			}
+		}
+		m_vecRunTimeList.clear();
+		Json::Value downloadList = root["runtime"];
+		for (auto& download : downloadList) {
+			m_vecRunTimeList.push_back(download.asString());
+		}
+	}
+
 	return true;
 }

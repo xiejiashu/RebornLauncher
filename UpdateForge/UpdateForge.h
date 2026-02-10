@@ -14,7 +14,9 @@ private:
     void CreateControls();
     void LayoutControls(int width, int height);
     void OnBrowse();
-    void OnEncryptUrl();
+    void OnBrowseJsonFile();
+    void OnEncryptJsonPayload();
+    void OnDecryptJsonPayload();
     void OnGenerate();
     void RunWorker(std::wstring root, std::wstring key, bool encrypt);
     void LoadCachedSettings();
@@ -40,7 +42,9 @@ private:
     HWND m_btnGenerate{};
     HWND m_lblUrlInput{};
     HWND m_editUrlInput{};
+    HWND m_btnJsonBrowse{};
     HWND m_btnEncryptUrl{};
+    HWND m_btnDecryptPayload{};
     HWND m_lblUrlOutput{};
     HWND m_editUrlOutput{};
     HWND m_lblLog{};

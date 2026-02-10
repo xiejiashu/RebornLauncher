@@ -68,6 +68,12 @@ std::string BuildQueryPath(const std::string& basePath,
     return out;
 }
 
+void PushUnique(std::vector<std::string>& out, const std::string& value) {
+    if (std::find(out.begin(), out.end(), value) == out.end()) {
+        out.push_back(value);
+    }
+}
+
 std::vector<std::string> BuildCandidatePaths(const std::string& endpointPath,
                                              const std::string& relativePath) {
     const std::string normalizedEndpoint = NormalizeEndpointPath(endpointPath);
@@ -76,18 +82,27 @@ std::vector<std::string> BuildCandidatePaths(const std::string& endpointPath,
         relNoLeadingSlash.erase(relNoLeadingSlash.begin());
     }
 
-    std::vector<std::string> candidates;
-    candidates.reserve(4);
-    candidates.push_back(BuildQueryPath(normalizedEndpoint, "url", relNoLeadingSlash));
-    candidates.push_back(BuildQueryPath(normalizedEndpoint, "path", relNoLeadingSlash));
-    candidates.push_back(BuildQueryPath(normalizedEndpoint, "page", relNoLeadingSlash));
-
-    std::string appendedPath = normalizedEndpoint;
-    if (!appendedPath.empty() && appendedPath.back() != '/') {
-        appendedPath.push_back('/');
+    std::vector<std::string> endpointCandidates;
+    endpointCandidates.reserve(2);
+    endpointCandidates.push_back(normalizedEndpoint);
+    if (normalizedEndpoint != "/signal") {
+        endpointCandidates.push_back("/signal");
     }
-    appendedPath.append(relNoLeadingSlash);
-    candidates.push_back(std::move(appendedPath));
+
+    std::vector<std::string> candidates;
+    candidates.reserve(endpointCandidates.size() * 4);
+    for (const auto& basePath : endpointCandidates) {
+        PushUnique(candidates, BuildQueryPath(basePath, "url", relNoLeadingSlash));
+        PushUnique(candidates, BuildQueryPath(basePath, "path", relNoLeadingSlash));
+        PushUnique(candidates, BuildQueryPath(basePath, "page", relNoLeadingSlash));
+
+        std::string appendedPath = basePath;
+        if (!appendedPath.empty() && appendedPath.back() != '/') {
+            appendedPath.push_back('/');
+        }
+        appendedPath.append(UrlEncode(relNoLeadingSlash));
+        PushUnique(candidates, appendedPath);
+    }
     return candidates;
 }
 
@@ -122,10 +137,11 @@ bool TryDownloadFromCandidates(ClientType& client,
                                const std::vector<std::string>& candidates,
                                const std::string& relativeUrl,
                                const std::string& filePath,
+                               const std::string& signalAuthToken,
                                const std::function<void(uint64_t, uint64_t)>& onProgress) {
     client.set_follow_location(true);
     client.set_connection_timeout(8, 0);
-    client.set_read_timeout(60, 0);
+    client.set_read_timeout(600, 0);
     client.set_write_timeout(15, 0);
 
     std::filesystem::path targetPath(filePath);
@@ -143,10 +159,14 @@ bool TryDownloadFromCandidates(ClientType& client,
         relNoLeadingSlash.erase(relNoLeadingSlash.begin());
     }
 
-    const httplib::Headers headers = {
+    httplib::Headers headers = {
         { "X-UpdateForge-Relative-Path", relNoLeadingSlash },
         { "X-UpdateForge-Relative-Url", relativeUrl },
     };
+    if (!signalAuthToken.empty()) {
+        headers.emplace("Authorization", "Bearer " + signalAuthToken);
+        headers.emplace("X-Signal-Auth-Token", signalAuthToken);
+    }
 
     for (const auto& candidate : candidates) {
         std::filesystem::remove(tempPath, ec);
@@ -271,7 +291,7 @@ bool P2PClient::TryDownload(const std::string& url,
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (endpoint.useTls) {
         httplib::SSLClient client(endpoint.host, endpoint.port);
-        return TryDownloadFromCandidates(client, candidates, relativeUrl, filePath, onProgress);
+        return TryDownloadFromCandidates(client, candidates, relativeUrl, filePath, settings.signalAuthToken, onProgress);
     }
 #endif
 
@@ -280,5 +300,5 @@ bool P2PClient::TryDownload(const std::string& url,
     }
 
     httplib::Client client(endpoint.host, endpoint.port);
-    return TryDownloadFromCandidates(client, candidates, relativeUrl, filePath, onProgress);
+    return TryDownloadFromCandidates(client, candidates, relativeUrl, filePath, settings.signalAuthToken, onProgress);
 }

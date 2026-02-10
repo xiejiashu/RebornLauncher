@@ -21,16 +21,16 @@ struct DataBlock {
 class WorkThread
 {
 public:
-	WorkThread(HWND hWnd, const std::wstring& strModulePath,const std::wstring& strModuleName,const std::wstring& strModuleDir);
+	WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir, const P2PSettings& initialP2PSettings = {});
 	~WorkThread();
 public:
 	static DWORD WINAPI ThreadProc(LPVOID lpParameter);
 public:
 	DWORD Run();
 	void HandleError(const char* msg);
-	std::string DecryptUrl(const std::string& ciphertext);
+	std::string DecryptConfigPayload(const std::string& ciphertext);
 	std::string DecryptVersionDat(const std::string& ciphertext);
-	void DownloadRunTimeFile();
+	bool DownloadRunTimeFile();
 
 	int GetTotalDownload() const;
 	int GetCurrentDownload() const;
@@ -40,7 +40,7 @@ public:
 	int GetCurrentDownloadSize() const;
 	int GetCurrentDownloadProgress() const;
 	
-	void DownloadBasePackage();
+	bool DownloadBasePackage();
 
 	void Extract7z(const std::string& filename, const std::string& destPath);
 
@@ -49,17 +49,19 @@ public:
 	void ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files);
 
 	bool DownloadWithResume(const std::string& url, const std::string& file_path);
+	bool DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath);
+	bool DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount);
 
-	// ????????????????????
+	// Publish downloaded file hashes into shared memory mappings for the game clients.
 	void WriteDataToMapping();
 
 	void WebServiceThread();
 
 	void Stop();
 
-	bool GetDownloadUrl();
+	bool FetchBootstrapConfig();
 
-	bool GetRemoteVersionFile();
+	bool RefreshRemoteVersionManifest();
 
 	void UpdateP2PSettings(const P2PSettings& settings);
 	P2PSettings GetP2PSettings() const;
@@ -76,6 +78,9 @@ private:
 
 	std::string m_strUrl;
 	std::string m_strPage;
+	std::string m_strVersionManifestPath;
+	std::vector<std::string> m_basePackageUrls;
+	std::string m_extractRootPrefix;
 
 	int m_nTotalDownload{ 0 };
 	int m_nCurrentDownload{ 0 };

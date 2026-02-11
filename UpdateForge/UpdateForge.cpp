@@ -993,6 +993,11 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
                 msg.append(L" (zstd-dict)");
             else
                 msg.append(L" (plain)");
+			// 对dat文件生成一个MD5校验文件
+            std::string datMd5 = FileHash::file_md5(outPath);
+            std::wstring md5Path = outPath + L".md5";
+            std::ofstream md5Ofs(md5Path, std::ios::binary);
+			md5Ofs << datMd5;
         }
         catch (...)
         {

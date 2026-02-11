@@ -1,4 +1,4 @@
-// RebornLauncher main entry and UI logic / RebornLauncher main UI
+﻿// RebornLauncher main entry and UI logic / RebornLauncher main UI
 //
 
 #include "framework.h"
@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <process.h>
 #include <string>
 #include <algorithm>
 #include <vector>
@@ -99,6 +100,8 @@ size_t g_animFrameIndex = 0;
 int g_downloadPercent = 1;
 int g_animPulse = 0;
 std::wstring g_animStatusText = L"Updating resources...";
+HANDLE g_hSingleInstanceMutex = NULL;
+constexpr const wchar_t* kLauncherSingleInstanceMutexName = L"Local\\MapleFireReborn.RebornLauncher.SingleInstance";
 
 std::filesystem::path GetModuleDir() {
 	if (!g_strCurrentModulePath.empty()) {
@@ -766,6 +769,21 @@ bool IsInMapleFireRebornDir() {
 	if (str.find(TEXT("MapleFireReborn")) != std::string::npos
         || str.find(TEXT("RebornV")) != std::string::npos)
     {
+		// 如果不是处于硬盘根目录下，且目录下只有当前可执行文件，则认为是在正确目录下
+		std::filesystem::path currentPath = std::filesystem::path(g_strCurrentModulePath).parent_path();
+		if (currentPath.has_parent_path()) {
+			bool onlyCurrentExe = true;
+			for (const auto& entry : std::filesystem::directory_iterator(currentPath)) {
+				if (entry.path().filename() == g_strCurrentExeName) {
+					continue;
+				}
+				onlyCurrentExe = false;
+				break;
+			}
+			if (onlyCurrentExe) {
+				return true;
+			}
+		}
         std::cout << "aaa" << std::endl;
         std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
         return true;
@@ -817,6 +835,18 @@ void InitTrayIcon(HWND hWnd) {
     Shell_NotifyIcon(NIM_ADD, &nid);
 }
 
+bool RequestRunningLauncherRunClient() {
+	httplib::Client cli("localhost", 12345);
+	for (int i = 0; i < 10; ++i) {
+		auto res = cli.Get("/RunClient");
+		if (res && res->status == 200) {
+			return true;
+		}
+		Sleep(200);
+	}
+	return false;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPWSTR    lpCmdLine,
@@ -843,61 +873,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 //	std::streambuf* originalCoutBufferA = std::cout.rdbuf();
 //	std::cout.rdbuf(outLogA.rdbuf());
 //#endif
-
-	DWORD dwPID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("pid"),0);
-    if (dwPID)
-    {
-        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
-        if (IsProcessRunning(dwPID))
-        {
-			//DWORD dwExitCode = 0;
-   //         DWORD dwResult = WaitForSingleObject(hProcess, 0);
-   //         if (dwResult != WAIT_TIMEOUT)
-   //         {
-   //             CloseHandle(hProcess);
-
-
-   //         }
-            httplib::Client cli("localhost", 12345);
-            auto res = cli.Get("/RunClient");
-            if (res && res->status == 200)
-            {
-                // success
-            }
-            else
-            {
-                MessageBox(NULL, TEXT("Only up to 2 clients can run at the same time."), TEXT("Error"), MB_OK);
-            }
-            return 0;
-        }
-    }
-
-	DWORD dwCurrentPID = GetCurrentProcessId();
-    TCHAR szPID[32] = { 0 };
-	_itow_s(dwCurrentPID, szPID, 10);
-	WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), szPID);
-
-	DWORD dwClient1PID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("Client1PID"), 0);
-	DWORD dwClient2PID = GetProfileInt(TEXT("MapleFireReborn"), TEXT("Client2PID"), 0);
-	if (dwClient1PID)
-	{
-		HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwClient1PID);
-		if (hProcess)
-		{
-			TerminateProcess(hProcess, 0);
-			CloseHandle(hProcess);
-		}
-	}
-
-    if (dwClient2PID)
-    {
-        HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, dwClient1PID);
-        if (hProcess)
-        {
-            TerminateProcess(hProcess, 0);
-            CloseHandle(hProcess);
-        }
-    }
 
 #ifdef _DEBUG
     AllocConsole();
@@ -926,7 +901,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
        //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
 		LPCTSTR lpTargetDir = TEXT("C:\\MapleFireReborn ");
-        const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("C:\\MapleFireReborn") };
+        const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("F:\\MapleFireReborn"),TEXT("G:\\MapleFireReborn"),TEXT("C:\\MapleFireReborn") };
         for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
 			CreateDirectory(dirs[i], NULL);
 			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
@@ -960,8 +935,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		TCHAR newPath[MAX_PATH];
 		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
         if (!IsProcessRunning(newPath)) {
+			WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
 			ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
-            WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
             ExitProcess(0);
         }
         return 0;
@@ -970,21 +945,42 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         if (lpCmdLine)
         {
+			// 如果 lpCmdLine 进程存在则先结束掉进程再删除文件
+			DWORD pid = GetProfileInt(TEXT("MapleFireReborn"), TEXT("pid"), 0);
+			if (pid) {
+				if (IsProcessRunning(pid)) {
+					TerminateProcess(OpenProcess(PROCESS_TERMINATE, FALSE, pid), 0);
+				}
+			}
+
+			// 删除掉旧文件(因为有可能在桌面)
 			SetFileAttributes(lpCmdLine, FILE_ATTRIBUTE_NORMAL);
             DeleteFile(lpCmdLine);
 
-			if (g_strCurrentExeName != TEXT("RebornLauncher.exe"))
+			// 修复启动器名称为 RebornLauncher.exe 因为可能更新自己了把Template.exe改名
+			if (g_strCurrentExeName.compare(TEXT("RebornLauncher.exe")) != 0)
 			{
 				TCHAR newPath[MAX_PATH];
 				swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
 				CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
+				// 修正快捷方式
+				WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
 				ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
-                WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 				ExitProcess(0);
 			}
         }
     }
 #endif
+
+	g_hSingleInstanceMutex = CreateMutex(nullptr, FALSE, kLauncherSingleInstanceMutexName);
+	if (g_hSingleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+		if (!RequestRunningLauncherRunClient()) {
+			MessageBox(nullptr, TEXT("Launcher is already running, but failed to request new game launch."), TEXT("Error"), MB_OK);
+		}
+		CloseHandle(g_hSingleInstanceMutex);
+		g_hSingleInstanceMutex = NULL;
+		return 0;
+	}
 
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
@@ -999,6 +995,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			g_gdiplusToken = 0;
 		}
 		CoUninitialize();
+		if (g_hSingleInstanceMutex) {
+			CloseHandle(g_hSingleInstanceMutex);
+			g_hSingleInstanceMutex = NULL;
+		}
         return FALSE;
     }
 
@@ -1037,7 +1037,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     std::cout << "Request stopped" << std::endl;
     workThread.Stop();
-	WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 	g_workThreadPtr = nullptr;
 	if (g_gdiplusToken != 0) {
 		Gdiplus::GdiplusShutdown(g_gdiplusToken);
@@ -1047,6 +1046,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     std::cout << "ooooooooooooooooooo" << std::endl;
 
 	CoUninitialize();
+	if (g_hSingleInstanceMutex) {
+		CloseHandle(g_hSingleInstanceMutex);
+		g_hSingleInstanceMutex = NULL;
+	}
     return (int) msg.wParam;
 }
 

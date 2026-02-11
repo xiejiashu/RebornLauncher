@@ -30,6 +30,8 @@ namespace {
 
 constexpr const char* kBootstrapHost = "https://gitee.com";
 constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
+constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Map";
+constexpr size_t kVersionMapMaxBytes = 8 * 1024 * 1024;
 
 // Normalize a relative URL path with forward slashes and a leading '/'.
 std::string NormalizeRelativeUrlPath(std::string path) {
@@ -465,6 +467,22 @@ std::string GetLowerAscii(std::string value) {
 	return value;
 }
 
+// Uppercase ASCII characters in a string.
+std::string GetUpperAscii(std::string value) {
+	for (auto& c : value) {
+		c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+	}
+	return value;
+}
+
+// Normalize a filesystem path to a stable lowercase Windows-style key.
+std::string NormalizeMappingPathKey(std::filesystem::path path) {
+	path = path.lexically_normal();
+	std::string key = path.generic_string();
+	std::replace(key.begin(), key.end(), '/', '\\');
+	return GetLowerAscii(key);
+}
+
 // Find the common parent path for executable entries.
 std::string DetermineExeRootPrefix(const std::vector<DataBlock>& files) {
 	std::vector<std::vector<std::string>> exeParentParts;
@@ -600,8 +618,6 @@ void WriteToFileWithSharedAccess(const std::wstring& strLocalFile, const std::st
 WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::wstring& strModuleName, const std::wstring& strModuleDir, const P2PSettings& initialP2PSettings)
 	: m_hMainWnd(hWnd), m_strModulePath(strModulePath), m_strModuleName(strModuleName), m_strModuleDir(strModuleDir)
 	, m_bUpdateSelf(false), m_nTotalDownload(0), m_nCurrentDownload(0), m_nCurrentDownloadSize(0), m_nCurrentDownloadProgress(0)
-	, m_hGameProcess{ nullptr }
-	, m_dwGameProcessId()
 	, m_qwVersion(0)
 	, m_bRun(TRUE)
 	, m_strCurrentDownload(L"")
@@ -642,32 +658,32 @@ WorkThread::~WorkThread()
 // Thread entry point that terminates stray processes and runs the worker.
 DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 {
-	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (hSnapshot != INVALID_HANDLE_VALUE) {
-		PROCESSENTRY32 pe;
-		pe.dwSize = sizeof(PROCESSENTRY32);
-		if (Process32First(hSnapshot, &pe)) {
-			do {
-				HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-				if (hProcess) {
-					TCHAR processPath[MAX_PATH];
-					DWORD dwSize = MAX_PATH;
-					if (QueryFullProcessImageName(hProcess, 0, processPath, &dwSize))
-					{
-						std::wstring strProcessPath = processPath;
-						if (strProcessPath.find(L"MapleFireReborn.exe") != std::string::npos){
-							TerminateProcess(hProcess, 0);
-						}
-						if (strProcessPath.find(L"MapleStory.exe") != std::string::npos) {
-							TerminateProcess(hProcess, 0);
-						}
-					}
-					CloseHandle(hProcess);
-				}
-			} while (Process32Next(hSnapshot, &pe));
-		}
-		CloseHandle(hSnapshot);
-	}
+	// HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	// if (hSnapshot != INVALID_HANDLE_VALUE) {
+	// 	PROCESSENTRY32 pe;
+	// 	pe.dwSize = sizeof(PROCESSENTRY32);
+	// 	if (Process32First(hSnapshot, &pe)) {
+	// 		do {
+	// 			HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
+	// 			if (hProcess) {
+	// 				TCHAR processPath[MAX_PATH];
+	// 				DWORD dwSize = MAX_PATH;
+	// 				if (QueryFullProcessImageName(hProcess, 0, processPath, &dwSize))
+	// 				{
+	// 					std::wstring strProcessPath = processPath;
+	// 					if (strProcessPath.find(L"MapleFireReborn.exe") != std::string::npos){
+	// 						TerminateProcess(hProcess, 0);
+	// 					}
+	// 					if (strProcessPath.find(L"MapleStory.exe") != std::string::npos) {
+	// 						TerminateProcess(hProcess, 0);
+	// 					}
+	// 				}
+	// 				CloseHandle(hProcess);
+	// 			}
+	// 		} while (Process32Next(hSnapshot, &pe));
+	// 	}
+	// 	CloseHandle(hSnapshot);
+	// }
 
 	WorkThread* pThis = (WorkThread*)lpParameter;
 	if (pThis) {
@@ -676,14 +692,13 @@ DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 	return 0;
 }
 
-// 主流程：拉取配置、检查更新、启动客户端并进入监控循环。
 DWORD WorkThread::Run()
 {
-	// 记录当前工作目录
+	// Record current working directory.
 	m_strCurrentDir = std::filesystem::current_path().string();
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
-	// 拉取启动配置（包含下载地址与 P2P 参数）
+	// Fetch bootstrap config (download roots + P2P settings).
 	if (!FetchBootstrapConfig())
 	{
 		MessageBox(m_hMainWnd, L"Failed to fetch bootstrap config.", L"Error", MB_OK);
@@ -692,7 +707,7 @@ DWORD WorkThread::Run()
 	}
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 
-	// 补齐信令地址并同步 P2P 配置到客户端
+	// Fill default signal endpoint and sync P2P client settings.
 	{
 		std::lock_guard<std::mutex> lock(m_p2pMutex);
 		if (m_p2pSettings.signalEndpoint.empty()) {
@@ -703,11 +718,11 @@ DWORD WorkThread::Run()
 		}
 	}
 
-	// 初始化主下载客户端
+	// Initialize primary HTTP client.
 	m_client = new httplib::Client(m_strUrl);
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-	// 基础包不存在时先下载并解压
+	// Download and extract base package when Data folder is missing.
 	if (!std::filesystem::exists("./Data"))
 	{
 		std::cout << __FILE__ << ":" << __LINE__ << std::endl;
@@ -723,7 +738,7 @@ DWORD WorkThread::Run()
 
 	{
 		std::cout << "9999999999999999999" << std::endl;
-		// 读取本地 Version.dat，并计算 MD5
+		// Read local Version.dat and compute MD5.
 		std::string strLocalVersionDatContent;
 		std::ifstream ifs("Version.dat", std::ios::binary);
 		if (ifs.is_open()) {
@@ -735,13 +750,26 @@ DWORD WorkThread::Run()
 		std::cout << "aaaaaaaaaaaaaaaaaaaaaaa" << std::endl;
 		m_strLocalVersionMD5 = FileHash::string_md5(strLocalVersionDatContent);
 
-		// 解析本地清单，初始化本地文件表与运行时列表
+		// Parse local manifest and initialize local file/runtime lists.
 		if (!strLocalVersionDatContent.empty())
 		{
 			std::string strLocalVersionDat = DecryptVersionDat(strLocalVersionDatContent);
+			std::string strLocalManifestJson;
 			Json::Value root;
 			Json::Reader reader;
-			if (reader.parse(strLocalVersionDat, root)) {
+			bool parsedLocalManifest = false;
+
+			if (!strLocalVersionDat.empty() && reader.parse(strLocalVersionDat, root)) {
+				strLocalManifestJson = strLocalVersionDat;
+				parsedLocalManifest = true;
+			}
+			else if (reader.parse(strLocalVersionDatContent, root)) {
+				strLocalManifestJson = strLocalVersionDatContent;
+				parsedLocalManifest = true;
+			}
+
+			if (parsedLocalManifest) {
+				WriteVersionToMapping(strLocalManifestJson);
 				m_qwVersion = root["time"].asInt64();
 				Json::Value filesJson = root["file"];
 				for (auto& fileJson : filesJson) {
@@ -754,7 +782,7 @@ DWORD WorkThread::Run()
 						continue;
 					}
 					m_mapFiles[config.m_strPage] = config;
-					// 为每个清单路径准备本地文件占位
+					// Ensure local placeholder file exists for each manifest entry.
 					try {
 						const std::filesystem::path localPath =
 							std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
@@ -781,10 +809,42 @@ DWORD WorkThread::Run()
 				}
 			}
 		}
+
+		// 获取远程 Version.dat 的 MD5 值 Version.dat.md5 文件
+		std::string strRemoteVersionDatMD5;
+		{
+			std::string strVersionDatMD5 = m_strVersionManifestPath + ".md5";
+			// 已经是完整 URL 了
+			if (IsHttpUrl(strVersionDatMD5)) {
+				httplib::Client clientExtract("");
+				std::string baseUrl;
+				std::string path;
+				if (ExtractBaseAndPath(strVersionDatMD5, baseUrl, path)) {
+					clientExtract = httplib::Client(baseUrl.c_str());
+					auto res = clientExtract.Get(path.c_str());
+					if (res && res->status == 200) {
+						strRemoteVersionDatMD5 = TrimAscii(res->body);
+					}
+				}
+			}
+			else
+			{
+				httplib::Client client(m_strUrl);
+				auto res = client.Get("/" + strVersionDatMD5);
+				if (res && res->status == 200) {
+					strRemoteVersionDatMD5 = TrimAscii(res->body);
+				}
+			}
+		}
+
+		// TODO: 输出远程 Version.dat MD5 值，调试用
+		// 比较本地和远程的 Version.dat MD5 值，决定是否需要下载最新的 Version.dat
+		if (!strRemoteVersionDatMD5.empty() && m_strLocalVersionMD5 != strRemoteVersionDatMD5) {
+			// Refresh remote manifest and download runtime updates.
+			RefreshRemoteVersionManifest();
+		}
 	}
 
-	// 拉取远端清单并下载运行时更新
-	RefreshRemoteVersionManifest();
 	if (!DownloadRunTimeFile())
 	{
 		MessageBox(m_hMainWnd, L"Failed to download update files.", L"Error", MB_OK);
@@ -792,74 +852,45 @@ DWORD WorkThread::Run()
 		return 0;
 	}
 
-	// 需要自更新时，启动临时更新程序并退出
+	// Start self-update helper then exit launcher process.
 	if (m_bUpdateSelf)
 	{
 		Stop();
+		WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
 		ShellExecute(NULL, L"open", L"UpdateTemp.exe", m_strModulePath.c_str(), m_strModuleDir.c_str(), SW_SHOWNORMAL);
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
-		WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), TEXT("0"));
 		ExitProcess(0);
 		return 0;
 	}
 
 	std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 	unsigned long long dwTick = GetTickCount64();
-	// 写入共享内存供客户端读取文件校验信息
+	// Publish file hashes into shared memory for the game client.
 	WriteDataToMapping();
 
 	unsigned long long dwNewTick = GetTickCount64();
 	std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
 	dwTick = dwNewTick;
 
-	// 启动客户端进程
-	STARTUPINFO si = { sizeof(si) };
-	PROCESS_INFORMATION pi;
-	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-		HandleError("CreateProcess failed");
+	// Launch first game client instance.
+	if (!LaunchGameClient()) {
+		MessageBox(m_hMainWnd, L"Failed to launch game client.", L"Error", MB_OK);
+		Stop();
+		return 0;
 	}
-
-	// 最小化托盘，并停止渲染
+	// Minimize launcher UI after start.
 	PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
 	g_bRendering = false;
 
 	dwNewTick = GetTickCount64();
 	std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
 
-	// 记录主客户端进程句柄与 PID
-	m_hGameProcess[0] = pi.hProcess;
-	m_dwGameProcessId[0] = pi.dwProcessId;
-
-	// 写入配置以便其他模块读取 PID
-	TCHAR szPID[32] = { 0 };
-	_itow_s(pi.dwProcessId, szPID, 10);
-	WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client1PID"), szPID);
-
-	if (pi.hThread)
-	{
-		CloseHandle(pi.hThread);
-	}
-
-	// 轮询监控客户端进程是否仍在运行
+	// Poll game process list until shutdown.
 	do
 	{
-		bool bHaveGameRun = false;
-		for (int i = 0; i < sizeof(m_dwGameProcessId) / sizeof(m_dwGameProcessId[0]); ++i)
-		{
-			if (m_dwGameProcessId[0])
-			{
-				if (IsProcessRunning(m_dwGameProcessId[i]))
-				{
-					bHaveGameRun = true;
-				}
-				else {
-					m_dwGameProcessId[i] = 0;
-					m_hGameProcess[i] = nullptr;
-				}
-			}
-		}
-
-		// 客户端都退出且 UI 不渲染时，关闭托盘并结束
+		CleanupExitedGameInfos();
+		// Close tray and stop when no client remains.
+		const bool bHaveGameRun = HasRunningGameProcess();
 		if (bHaveGameRun == false && g_bRendering == false)
 		{
 			PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
@@ -867,21 +898,12 @@ DWORD WorkThread::Run()
 		}
 
 		Sleep(1);
-	} while (m_bRun);
-
-	// 清理残留的客户端进程句柄
-	for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
-	{
-		if (m_hGameProcess[i])
-		{
-			TerminateProcess(m_hGameProcess[i], 0);
-			CloseHandle(m_hGameProcess[i]);
-			m_hGameProcess[i] = nullptr;
-			m_dwGameProcessId[i] = 0;
-		}
 	}
+	while (m_bRun);
 
-	// 关闭工作线程句柄
+	// Cleanup remaining game processes before worker exits.
+	TerminateAllGameProcesses();
+	// Close worker thread handle.
 	CloseHandle(m_hThread);
 	m_hThread = nullptr;
 
@@ -993,7 +1015,7 @@ bool WorkThread::DownloadRunTimeFile()
 	{
 		std::string strLocalFile = download;
 		const std::string strPage = JoinUrlPath(
-			m_strPage, "Update/" + std::to_string(m_mapFiles[download].m_qwTime) + "/" + download);
+			m_strPage, std::to_string(m_mapFiles[download].m_qwTime) + "/" + download);
 
 		std::cout <<__FUNCTION__<<":" << strPage << std::endl;
 		SetCurrentDownloadFile(str2wstr(strLocalFile, strLocalFile.length()));
@@ -1854,22 +1876,212 @@ void WorkThread::WriteDataToMapping()
 	}
 }
 
+void WorkThread::WriteVersionToMapping(std::string& m_strRemoteVersionJson)
+{
+	Json::Value manifestRoot;
+	Json::CharReaderBuilder readerBuilder;
+	std::string errors;
+	std::istringstream manifestStream(m_strRemoteVersionJson);
+	if (!Json::parseFromStream(readerBuilder, manifestStream, &manifestRoot, &errors) || !manifestRoot.isObject()) {
+		std::cout << "WriteVersionToMapping: invalid manifest json." << std::endl;
+		return;
+	}
+
+	Json::Value mappedFiles(Json::objectValue);
+	std::error_code ec;
+	const std::filesystem::path currentDir = std::filesystem::current_path(ec);
+	if (ec) {
+		std::cout << "WriteVersionToMapping: failed to get current path." << std::endl;
+		return;
+	}
+
+	const Json::Value filesJson = manifestRoot["file"];
+	if (filesJson.isArray()) {
+		for (const auto& fileJson : filesJson) {
+			const std::string page = TrimAscii(fileJson["page"].asString());
+			const std::string md5 = GetUpperAscii(TrimAscii(fileJson["md5"].asString()));
+			if (page.empty() || md5.empty()) {
+				continue;
+			}
+
+			try {
+				const std::filesystem::path fullPath = (currentDir / std::filesystem::u8path(page)).lexically_normal();
+				const std::string pathKey = NormalizeMappingPathKey(fullPath);
+				if (!pathKey.empty()) {
+					mappedFiles[pathKey] = md5;
+				}
+			}
+			catch (...) {
+				std::cout << "WriteVersionToMapping: skip invalid page path: " << page << std::endl;
+			}
+		}
+	}
+
+	std::ostringstream payloadBuilder;
+	for (const auto& key : mappedFiles.getMemberNames()) {
+		const Json::Value& md5 = mappedFiles[key];
+		if (!md5.isString()) {
+			continue;
+		}
+		payloadBuilder << key << '\t' << md5.asString() << '\n';
+	}
+
+	const std::string payload = payloadBuilder.str();
+	if (payload.empty()) {
+		std::cout << "WriteVersionToMapping: empty payload." << std::endl;
+		return;
+	}
+	if (payload.size() + 1 > kVersionMapMaxBytes) {
+		std::cout << "WriteVersionToMapping: payload too large, bytes=" << payload.size() << std::endl;
+		return;
+	}
+
+	if (m_hMappingVersion) {
+		CloseHandle(m_hMappingVersion);
+		m_hMappingVersion = nullptr;
+	}
+
+	m_hMappingVersion = CreateFileMappingA(
+		INVALID_HANDLE_VALUE,
+		nullptr,
+		PAGE_READWRITE,
+		0,
+		static_cast<DWORD>(payload.size() + 1),
+		kVersionMapMappingName);
+	if (!m_hMappingVersion) {
+		std::cout << "WriteVersionToMapping: CreateFileMappingA failed, error=" << GetLastError() << std::endl;
+		return;
+	}
+
+	void* view = MapViewOfFile(m_hMappingVersion, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+	if (!view) {
+		std::cout << "WriteVersionToMapping: MapViewOfFile failed, error=" << GetLastError() << std::endl;
+		CloseHandle(m_hMappingVersion);
+		m_hMappingVersion = nullptr;
+		return;
+	}
+
+	memcpy(view, payload.data(), payload.size());
+	static_cast<char*>(view)[payload.size()] = '\0';
+	UnmapViewOfFile(view);
+}
+
+bool WorkThread::LaunchGameClient()
+{
+	STARTUPINFO si = { sizeof(si) };
+	PROCESS_INFORMATION pi{};
+	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+		std::cerr << "CreateProcess failed, error: " << GetLastError() << std::endl;
+		return false;
+	}
+
+	if (pi.hThread) {
+		CloseHandle(pi.hThread);
+	}
+
+	auto gameInfo = std::make_shared<tagGameInfo>();
+	gameInfo->hProcess = pi.hProcess;
+	gameInfo->hMainWnd = nullptr;
+	gameInfo->dwProcessId = pi.dwProcessId;
+
+	{
+		std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+		m_gameInfos.push_back(gameInfo);
+	}
+
+	std::cout << "Client launched, pid=" << pi.dwProcessId << std::endl;
+	return true;
+}
+
+void WorkThread::CleanupExitedGameInfos()
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	m_gameInfos.erase(std::remove_if(m_gameInfos.begin(), m_gameInfos.end(),
+		[](const std::shared_ptr<tagGameInfo>& info) {
+			if (!info) {
+				return true;
+			}
+			if (info->dwProcessId != 0 && IsProcessRunning(info->dwProcessId)) {
+				return false;
+			}
+			if (info->hProcess) {
+				CloseHandle(info->hProcess);
+				info->hProcess = nullptr;
+			}
+			info->dwProcessId = 0;
+			return true;
+		}),
+		m_gameInfos.end());
+}
+
+bool WorkThread::HasRunningGameProcess()
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	for (const auto& info : m_gameInfos) {
+		if (info && info->dwProcessId != 0 && IsProcessRunning(info->dwProcessId)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void WorkThread::TerminateAllGameProcesses()
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	for (const auto& info : m_gameInfos) {
+		if (!info) {
+			continue;
+		}
+		if (info->hProcess) {
+			TerminateProcess(info->hProcess, 0);
+			CloseHandle(info->hProcess);
+			info->hProcess = nullptr;
+		}
+		else if (info->dwProcessId != 0) {
+			HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, info->dwProcessId);
+			if (hProcess) {
+				TerminateProcess(hProcess, 0);
+				CloseHandle(hProcess);
+			}
+		}
+		info->dwProcessId = 0;
+	}
+	m_gameInfos.clear();
+}
+
 // Run local HTTP control endpoints for download/launch.
 void WorkThread::WebServiceThread()
 {
 	httplib::Server svr;
-		svr.Get("/download", [this](const httplib::Request& req, httplib::Response& res) {
+	svr.Get("/download", [this](const httplib::Request& req, httplib::Response& res) {
 		g_bRendering = true;
 		m_nTotalDownload = 1;
 		m_nCurrentDownload = 0;
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
 		std::string strPage = req.get_param_value("page");
 		SetCurrentDownloadFile(str2wstr(strPage, static_cast<int>(strPage.length())));
-		auto it = m_mapFiles.find(strPage);
+		//因为strPage是'/' 而 m_mapFiles的key是'\' 所以需要转换
+		std::string keyPage = strPage;
+		std::replace(keyPage.begin(), keyPage.end(), '/', '\\');
+		auto it = m_mapFiles.find(keyPage);
+		if (it == m_mapFiles.end()) {
+			RefreshRemoteVersionManifest();
+			it = m_mapFiles.find(keyPage);
+		}
 		if (it != m_mapFiles.end()) {
-			res.status = 200;
-			res.set_content("OK", "text/plain");
-		} else {
+			const std::string strRemotePage = JoinUrlPath(
+				m_strPage, std::to_string(it->second.m_qwTime) + "/" + strPage);
+			if (DownloadWithResume(strRemotePage, strPage)) {
+				m_nCurrentDownload = 1;
+				res.status = 200;
+				res.set_content("OK", "text/plain");
+			}
+			else {
+				res.status = 502;
+				res.set_content("Download Failed", "text/plain");
+			}
+		}
+		else {
 			res.status = 404;
 			res.set_content("Not Found", "text/plain");
 		}
@@ -1877,88 +2089,36 @@ void WorkThread::WebServiceThread()
 		g_bRendering = false;
 	});
 
-svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
-
+	svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
 		std::cout << "RunClient request" << std::endl;
-
 		RefreshRemoteVersionManifest();
-		// Download runtime files before launching clients
 		if (!DownloadRunTimeFile()) {
 			res.status = 502;
 			res.set_content("Update download failed.", "text/plain");
 			return;
 		}
 
-		bool launched = false;
-		for (int i = 0; i < static_cast<int>(sizeof(m_dwGameProcessId) / sizeof(m_dwGameProcessId[0])); ++i)
-		{
-			if (m_dwGameProcessId[i] != 0 && IsProcessRunning(m_dwGameProcessId[i]))
-			{
-				std::cout << "Process " << m_dwGameProcessId[i] << " already running" << std::endl;
-				continue;
-			}
-
-			STARTUPINFO si = { sizeof(si) };
-			PROCESS_INFORMATION pi{};
-			if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-				HandleError("CreateProcess failed");
-				continue;
-			}
-
-			m_hGameProcess[i] = pi.hProcess;
-			m_dwGameProcessId[i] = pi.dwProcessId;
-
-			TCHAR szPID[32] = { 0 };
-			_itow_s(pi.dwProcessId, szPID, 10);
-			if (i == 0)
-			{
-				WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client1PID"), szPID);
-			}
-			else if (i == 1)
-			{
-				WriteProfileString(TEXT("MapleFireReborn"), TEXT("Client2PID"), szPID);
-			}
-
-			if (pi.hThread)
-			{
-				CloseHandle(pi.hThread);
-			}
-
-			std::cout << "Client launched" << std::endl;
-			res.status = 200;
-			res.set_content("OK", "text/plain");
-			launched = true;
-			break;
+		CleanupExitedGameInfos();
+		if (!LaunchGameClient()) {
+			res.status = 500;
+			res.set_content("Client launch failed.", "text/plain");
+			return;
 		}
 
-		if (!launched)
-		{
-			res.status = 429;
-			res.set_content("Client limit reached (max 2).", "text/plain");
-		}
-
+		res.status = 200;
+		res.set_content("OK", "text/plain");
 		PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
 		g_bRendering = false;
 	});
 
-	svr.Get("/Stop", [&svr,this](const httplib::Request& req, httplib::Response& res) {
-		for (int i = 0; i < sizeof(m_hGameProcess) / sizeof(m_hGameProcess[0]); ++i)
-		{
-			if (m_hGameProcess[i])
-			{
-				TerminateProcess(m_hGameProcess[i], 0);
-				CloseHandle(m_hGameProcess[i]);
-				m_hGameProcess[i] = nullptr;
-			}
-		}
+	svr.Get("/Stop", [&svr, this](const httplib::Request& req, httplib::Response& res) {
+		TerminateAllGameProcesses();
 		res.status = 200;
 		res.set_content("OK", "text/plain");
 		svr.stop();
 	});
 
 	svr.listen("localhost", 12345);
-
-
 	std::cout << "Web service thread finished" << std::endl;
 }
 
@@ -2149,19 +2309,19 @@ bool WorkThread::FetchBootstrapConfig()
 // Download and parse the remote version manifest.
 bool WorkThread::RefreshRemoteVersionManifest()
 {
-	// 计算当前应该拉取的 Version.dat 路径（优先使用显式路径）
+	// Resolve Version.dat path (explicit path first, default fallback second).
 	const std::string strVersionDatPath = m_strVersionManifestPath.empty()
 		? JoinUrlPath(m_strPage, "Version.dat")
 		: m_strVersionManifestPath;
 
-	// 封装请求逻辑：支持绝对 URL 与已有客户端
+	// Request helper supporting absolute URL and relative path.
 	auto fetchManifest = [this](const std::string& requestTarget) -> httplib::Result {
 		httplib::Headers headers;
 		headers.insert({ "Accept", "application/octet-stream" });
 		headers.insert({ "Cache-Control", "no-cache" });
 
 		if (IsHttpUrl(requestTarget)) {
-			// 绝对 URL：临时创建客户端拉取
+			// Absolute URL path: build temporary client.
 			bool useTls = false;
 			std::string host;
 			int port = 0;
@@ -2188,18 +2348,18 @@ bool WorkThread::RefreshRemoteVersionManifest()
 			}
 		}
 
-		// 相对路径：复用主下载客户端
+		// Relative path: reuse primary download client.
 		if (!m_client) {
 			return httplib::Result();
 		}
 		return m_client->Get(requestTarget.c_str(), headers);
 	};
 
-	// 首次尝试拉取清单
+	// First fetch attempt.
 	httplib::Result res = fetchManifest(strVersionDatPath);
 	std::string resolvedPath = strVersionDatPath;
 
-	// 本地相对路径失败时，回退到同目录默认文件名
+	// Relative-path fallback: use sibling default Version.dat when needed.
 	if ((!res || res->status != 200 || res->body.empty()) && !IsHttpUrl(strVersionDatPath)) {
 		const std::string fileName = GetFileNameFromUrl(strVersionDatPath);
 		const std::string fallbackPath = JoinUrlPath(m_strPage, fileName.empty() ? "Version.dat" : fileName);
@@ -2213,7 +2373,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		}
 	}
 
-	// 状态码/内容校验
+	// Validate status and body before parsing.
 	if (!res || res->status != 200) {
 		const std::string statusText = res ? std::to_string(res->status) : std::string("none");
 		const int errorCode = static_cast<int>(res.error());
@@ -2228,7 +2388,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		return false;
 	}
 
-	// JSON 解析器封装
+	// JSON parse helper.
 	auto parseJsonObject = [](const std::string& text, Json::Value& out) -> bool {
 		Json::CharReaderBuilder builder;
 		std::string errors;
@@ -2236,23 +2396,23 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		return Json::parseFromStream(builder, iss, &out, &errors) && out.isObject();
 	};
 
-	// 尝试解析清单（支持明文 JSON / 旧版压缩 / 兼容 hex 编码）
+	// Parse manifest with compatibility order: JSON -> zstd -> hex variants.
 	std::string manifestBinary = res->body;
 	std::string manifestJsonText;
 	Json::Value root;
 
-	// 新格式：来自 UpdateForge 的纯 JSON 主体。
+	// New format: plain JSON body from UpdateForge.
 	if (parseJsonObject(manifestBinary, root)) {
 		manifestJsonText = manifestBinary;
 	}
 	else {
-		// 旧版格式：zstd 压缩的 Version.dat 有效负载。
+		// Legacy format: zstd-compressed Version.dat payload.
 		const std::string decompressed = DecryptVersionDat(manifestBinary);
 		if (!decompressed.empty() && parseJsonObject(decompressed, root)) {
 			manifestJsonText = decompressed;
 		}
 		else {
-			// 兼容性处理：如果有效负载是 hex 编码文本，解码一次后重试。
+			// Compatibility path: decode hex body then parse/decompress.
 			std::string decoded;
 			if (HexBodyToBytes(manifestBinary, decoded)) {
 				if (parseJsonObject(decoded, root)) {
@@ -2270,18 +2430,20 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		}
 	}
 
-	// 无法识别格式则失败
+	// Fail when no supported manifest format is recognized.
 	if (manifestJsonText.empty()) {
 		std::cout << "Version.dat format not supported, path: " << resolvedPath
 			<< ", body_size: " << res->body.size() << std::endl;
 		return false;
 	}
 
-	// 对比 MD5，仅当远端不同才刷新本地清单
+	WriteVersionToMapping(manifestJsonText);
+
+	// Compare Version.dat by body MD5 and refresh local state when changed.
 	std::string strRemoteVersionDatMd5 = FileHash::string_md5(manifestBinary);
 	if (strRemoteVersionDatMd5 != m_strLocalVersionMD5)
 	{
-		// 写回 Version.dat 并更新内存清单结构
+		// Persist latest Version.dat body and rebuild runtime map/list.
 		std::ofstream ofs("Version.dat", std::ios::binary);
 		ofs.write(manifestBinary.data(), manifestBinary.size());
 		ofs.close();
@@ -2298,7 +2460,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 				continue;
 			}
 			m_mapFiles[config.m_strPage] = config;
-			// 确保本地路径存在或创建占位文件
+			// Ensure local file path exists and create placeholder if missing.
 			try {
 				const std::filesystem::path localPath =
 					std::filesystem::current_path() / std::filesystem::u8path(config.m_strPage);
@@ -2320,7 +2482,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 				m_mapFiles.erase(config.m_strPage);
 			}
 		}
-		// 刷新运行时下载列表
+		// Refresh runtime download list from manifest.
 		m_vecRunTimeList.clear();
 		Json::Value downloadList = root["runtime"];
 		for (auto& download : downloadList) {

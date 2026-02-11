@@ -1,2 +1,4 @@
 Overconfident assumption on Version.dat format -> inferred from launcher-side decoder path instead of generator behavior -> verify writer implementation first and enforce explicit plain/encrypted format contracts.
 Encoding mojibake in Chinese comment -> introduced non-ASCII without verifying file encoding -> confirm encoding expectations before adding non-ASCII comments.
+PowerShell text replacement wrote literal escape markers (`r`n/`t`) into C++ source -> used quoted replacement strings without validating output block -> prefer `apply_patch` for code blocks and recompile immediately after scripted replacements.
+HTTP client integration compile break (WinSock redefinition + unsupported Get overload) -> introduced `httplib` without accounting for Windows include order and installed API variant -> include `winsock2.h` before `windows.h` and switch to explicit query-string request construction.

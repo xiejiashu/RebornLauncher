@@ -18,6 +18,13 @@ struct DataBlock {
 	struct archive_entry* entry;
 };
 
+struct tagGameInfo
+{
+	HANDLE hProcess{ nullptr };
+	HWND hMainWnd{ nullptr };
+	DWORD dwProcessId{ 0 };
+};
+
 class WorkThread
 {
 public:
@@ -39,7 +46,7 @@ public:
 
 	int GetCurrentDownloadSize() const;
 	int GetCurrentDownloadProgress() const;
-	
+
 	bool DownloadBasePackage();
 
 	void Extract7z(const std::string& filename, const std::string& destPath);
@@ -55,6 +62,8 @@ public:
 	// Publish downloaded file hashes into shared memory mappings for the game clients.
 	void WriteDataToMapping();
 
+	void WriteVersionToMapping(std::string& m_strRemoteVersionJson);
+
 	void WebServiceThread();
 
 	void Stop();
@@ -66,6 +75,10 @@ public:
 	void UpdateP2PSettings(const P2PSettings& settings);
 	P2PSettings GetP2PSettings() const;
 private:
+	bool LaunchGameClient();
+	void CleanupExitedGameInfos();
+	bool HasRunningGameProcess();
+	void TerminateAllGameProcesses();
 
 	BOOL m_bRun{ TRUE };
 
@@ -88,12 +101,12 @@ private:
 	int m_nCurrentDownloadSize{ 0 };
 	int m_nCurrentDownloadProgress{ 0 };
 
-	HANDLE m_hGameProcess[2];
+	std::vector<std::shared_ptr<tagGameInfo>> m_gameInfos;
+	mutable std::mutex m_gameInfosMutex;
 
-	// 
-	DWORD m_dwGameProcessId[2];
 
 	std::vector<HANDLE> m_hFileMappings;
+	HANDLE m_hMappingVersion{ nullptr };
 
 	bool m_bUpdateSelf{ false };
 

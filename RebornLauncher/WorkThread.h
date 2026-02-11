@@ -1,6 +1,7 @@
 #include "VersionConfig.h"
 #include "P2PClient.h"
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,10 @@ struct tagGameInfo
 	HANDLE hProcess{ nullptr };
 	HWND hMainWnd{ nullptr };
 	DWORD dwProcessId{ 0 };
+	bool downloading{ false };
+	std::wstring downloadFile;
+	uint64_t downloadDoneBytes{ 0 };
+	uint64_t downloadTotalBytes{ 0 };
 };
 
 class WorkThread
@@ -46,6 +51,7 @@ public:
 
 	int GetCurrentDownloadSize() const;
 	int GetCurrentDownloadProgress() const;
+	std::vector<tagGameInfo> GetGameInfosSnapshot() const;
 
 	bool DownloadBasePackage();
 
@@ -55,7 +61,7 @@ public:
 
 	void ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files);
 
-	bool DownloadWithResume(const std::string& url, const std::string& file_path);
+	bool DownloadWithResume(const std::string& url, const std::string& file_path, DWORD ownerProcessId = 0);
 	bool DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath);
 	bool DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount);
 
@@ -76,6 +82,11 @@ public:
 	P2PSettings GetP2PSettings() const;
 private:
 	bool LaunchGameClient();
+	HWND FindGameWindowByProcessId(DWORD processId) const;
+	void UpdateGameMainWindows();
+	void MarkClientDownloadStart(DWORD processId, const std::wstring& fileName);
+	void MarkClientDownloadProgress(DWORD processId, uint64_t downloaded, uint64_t total);
+	void MarkClientDownloadFinished(DWORD processId);
 	void CleanupExitedGameInfos();
 	bool HasRunningGameProcess();
 	void TerminateAllGameProcesses();

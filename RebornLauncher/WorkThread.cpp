@@ -586,6 +586,38 @@ uint64_t ParseTotalSizeFromResponse(const httplib::Response& response) {
 	return 0;
 }
 
+struct EnumGameWindowContext {
+	DWORD processId{ 0 };
+	HWND found{ nullptr };
+};
+
+BOOL CALLBACK EnumGameWindowProc(HWND hWnd, LPARAM lParam) {
+	auto* ctx = reinterpret_cast<EnumGameWindowContext*>(lParam);
+	if (!ctx || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
+		return TRUE;
+	}
+
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hWnd, &pid);
+	if (pid != ctx->processId) {
+		return TRUE;
+	}
+
+	wchar_t className[128]{};
+	if (GetClassNameW(hWnd, className, static_cast<int>(sizeof(className) / sizeof(className[0]))) <= 0) {
+		return TRUE;
+	}
+	if (_wcsicmp(className, L"MapleStoryClass") != 0) {
+		return TRUE;
+	}
+	if (GetWindow(hWnd, GW_OWNER) != nullptr) {
+		return TRUE;
+	}
+
+	ctx->found = hWnd;
+	return FALSE;
+}
+
 } // namespace
 
 // Write data to a file opened with shared read/write access.
@@ -878,9 +910,6 @@ DWORD WorkThread::Run()
 		Stop();
 		return 0;
 	}
-	// Minimize launcher UI after start.
-	PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
-	g_bRendering = false;
 
 	dwNewTick = GetTickCount64();
 	std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
@@ -889,9 +918,10 @@ DWORD WorkThread::Run()
 	do
 	{
 		CleanupExitedGameInfos();
+		UpdateGameMainWindows();
 		// Close tray and stop when no client remains.
 		const bool bHaveGameRun = HasRunningGameProcess();
-		if (bHaveGameRun == false && g_bRendering == false)
+		if (bHaveGameRun == false)
 		{
 			PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
 			break;
@@ -1108,6 +1138,155 @@ int WorkThread::GetCurrentDownloadSize() const
 int WorkThread::GetCurrentDownloadProgress() const
 {
 	return m_nCurrentDownloadProgress;
+}
+
+std::vector<tagGameInfo> WorkThread::GetGameInfosSnapshot() const
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	std::vector<tagGameInfo> snapshot;
+	snapshot.reserve(m_gameInfos.size());
+	for (const auto& info : m_gameInfos) {
+		if (!info) {
+			continue;
+		}
+		snapshot.push_back(*info);
+	}
+	return snapshot;
+}
+
+HWND WorkThread::FindGameWindowByProcessId(DWORD processId) const
+{
+	if (processId == 0) {
+		return nullptr;
+	}
+	EnumGameWindowContext ctx{};
+	ctx.processId = processId;
+	EnumWindows(EnumGameWindowProc, reinterpret_cast<LPARAM>(&ctx));
+	return ctx.found;
+}
+
+void WorkThread::UpdateGameMainWindows()
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	for (const auto& info : m_gameInfos) {
+		if (!info || info->dwProcessId == 0) {
+			continue;
+		}
+		if (!IsProcessRunning(info->dwProcessId)) {
+			continue;
+		}
+		if (info->hMainWnd && IsWindow(info->hMainWnd)) {
+			wchar_t className[128]{};
+			DWORD pid = 0;
+			GetWindowThreadProcessId(info->hMainWnd, &pid);
+			if (pid == info->dwProcessId &&
+				GetClassNameW(info->hMainWnd, className, static_cast<int>(sizeof(className) / sizeof(className[0]))) > 0 &&
+				_wcsicmp(className, L"MapleStoryClass") == 0) {
+				continue;
+			}
+		}
+		info->hMainWnd = FindGameWindowByProcessId(info->dwProcessId);
+	}
+}
+
+void WorkThread::MarkClientDownloadStart(DWORD processId, const std::wstring& fileName)
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	bool updated = false;
+	for (const auto& info : m_gameInfos) {
+		if (!info) {
+			continue;
+		}
+		if (processId != 0 && info->dwProcessId != processId) {
+			continue;
+		}
+		info->downloading = true;
+		info->downloadFile = fileName;
+		info->downloadDoneBytes = 0;
+		info->downloadTotalBytes = 0;
+		updated = true;
+		if (processId != 0) {
+			break;
+		}
+	}
+	if (updated || processId == 0) {
+		return;
+	}
+	for (const auto& info : m_gameInfos) {
+		if (!info || info->dwProcessId == 0) {
+			continue;
+		}
+		info->downloading = true;
+		info->downloadFile = fileName;
+		info->downloadDoneBytes = 0;
+		info->downloadTotalBytes = 0;
+	}
+}
+
+void WorkThread::MarkClientDownloadProgress(DWORD processId, uint64_t downloaded, uint64_t total)
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	bool updated = false;
+	for (const auto& info : m_gameInfos) {
+		if (!info) {
+			continue;
+		}
+		if (processId != 0 && info->dwProcessId != processId) {
+			continue;
+		}
+		info->downloading = true;
+		info->downloadDoneBytes = downloaded;
+		info->downloadTotalBytes = total;
+		updated = true;
+		if (processId != 0) {
+			break;
+		}
+	}
+	if (updated || processId == 0) {
+		return;
+	}
+	for (const auto& info : m_gameInfos) {
+		if (!info || info->dwProcessId == 0) {
+			continue;
+		}
+		info->downloading = true;
+		info->downloadDoneBytes = downloaded;
+		info->downloadTotalBytes = total;
+	}
+}
+
+void WorkThread::MarkClientDownloadFinished(DWORD processId)
+{
+	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	bool updated = false;
+	for (const auto& info : m_gameInfos) {
+		if (!info) {
+			continue;
+		}
+		if (processId != 0 && info->dwProcessId != processId) {
+			continue;
+		}
+		info->downloading = false;
+		info->downloadDoneBytes = 0;
+		info->downloadTotalBytes = 0;
+		info->downloadFile.clear();
+		updated = true;
+		if (processId != 0) {
+			break;
+		}
+	}
+	if (updated || processId == 0) {
+		return;
+	}
+	for (const auto& info : m_gameInfos) {
+		if (!info || info->dwProcessId == 0) {
+			continue;
+		}
+		info->downloading = false;
+		info->downloadDoneBytes = 0;
+		info->downloadTotalBytes = 0;
+		info->downloadFile.clear();
+	}
 }
 
 // Download a file from an absolute URL without resume.
@@ -1743,11 +1922,14 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 }
 
 // Download a file with HTTP resume (or P2P when enabled).
-bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path) {
+bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path, DWORD ownerProcessId) {
 
 	std::string strUrl = NormalizeRelativeUrlPath(url);
 	std::cout << __FILE__ << ":" << __LINE__ << " url:" << m_strUrl << " page:" << strUrl << std::endl;
-	SetCurrentDownloadFile(str2wstr(file_path, static_cast<int>(file_path.length())));
+	const std::wstring filePathW = str2wstr(file_path, static_cast<int>(file_path.length()));
+	SetCurrentDownloadFile(filePathW);
+	MarkClientDownloadStart(ownerProcessId, filePathW);
+	MarkClientDownloadProgress(ownerProcessId, 0, 0);
 
 	{
 		P2PSettings settingsCopy;
@@ -1757,11 +1939,12 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		}
 		if (settingsCopy.enabled && m_p2pClient) {
 			m_p2pClient->UpdateSettings(settingsCopy);
-			const bool p2pOk = m_p2pClient->TryDownload(strUrl, file_path, [this](uint64_t current, uint64_t total) {
+			const bool p2pOk = m_p2pClient->TryDownload(strUrl, file_path, [this, ownerProcessId](uint64_t current, uint64_t total) {
 				m_nCurrentDownloadProgress = static_cast<int>(current);
 				if (total > 0) {
 					m_nCurrentDownloadSize = static_cast<int>(total);
 				}
+				MarkClientDownloadProgress(ownerProcessId, current, total);
 			});
 			if (p2pOk) {
 				if (m_nCurrentDownloadSize <= 0) {
@@ -1774,12 +1957,16 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 				m_nCurrentDownloadProgress = m_nCurrentDownloadSize > 0
 					? m_nCurrentDownloadSize
 					: m_nCurrentDownloadProgress;
+				MarkClientDownloadProgress(ownerProcessId,
+					static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadProgress)),
+					static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
 				return true;
 			}
 		}
 	}
 
 	if (m_client == nullptr) {
+		MarkClientDownloadFinished(ownerProcessId);
 		return false;
 	}
 
@@ -1791,10 +1978,12 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		res = m_client->Get(strUrl.c_str(), headers);
 		if (res && (res->status == 200 || res->status == 206)) {
 			m_nCurrentDownloadSize = static_cast<int>(ParseTotalSizeFromResponse(*res));
+			MarkClientDownloadProgress(ownerProcessId, 0, static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
 		}
 		else {
 			std::cout << "Failed to get file size, status code: " << (res ? res->status : -1) << std::endl;
 			m_nCurrentDownloadSize = 0;
+			MarkClientDownloadProgress(ownerProcessId, 0, 0);
 		}
 	}
 
@@ -1807,6 +1996,10 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	}
 	if (m_nCurrentDownloadSize > 0) {
 		if (existing_file_size == static_cast<size_t>(m_nCurrentDownloadSize)) {
+			MarkClientDownloadProgress(ownerProcessId,
+				static_cast<uint64_t>(existing_file_size),
+				static_cast<uint64_t>(m_nCurrentDownloadSize));
+			MarkClientDownloadFinished(ownerProcessId);
 			return true;
 		}
 		else if (existing_file_size > static_cast<size_t>(m_nCurrentDownloadSize)) {
@@ -1820,6 +2013,9 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	if (existing_file_size > 0) {
 		// Resume download from where we left off
 		m_nCurrentDownloadProgress = static_cast<int>(existing_file_size);
+		MarkClientDownloadProgress(ownerProcessId,
+			static_cast<uint64_t>(existing_file_size),
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
 		headers.insert({ "Range", "bytes=" + std::to_string(existing_file_size) + "-" + std::to_string(m_nCurrentDownloadSize) });
 		std::cout << "Resuming download from byte: " << existing_file_size << std::endl;
 	}
@@ -1827,6 +2023,7 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 	// Open file for append
 	std::ofstream file(std::filesystem::u8path(file_path), std::ios::binary | std::ios::app);
 	if (!file.is_open()) {
+		MarkClientDownloadFinished(ownerProcessId);
 		return false;
 	}
 
@@ -1834,20 +2031,32 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		file.write(data, static_cast<std::streamsize>(data_length));
 		file.flush();
 		m_nCurrentDownloadProgress += static_cast<int>(data_length);
+		MarkClientDownloadProgress(ownerProcessId,
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadProgress)),
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
 		return true; // keep downloading
 	});
 	file.close();
 
 	if (res && res->status == 200) {
 		std::cout << "Download completed!" << std::endl;
+		MarkClientDownloadProgress(ownerProcessId,
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)),
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
+		MarkClientDownloadFinished(ownerProcessId);
 		return true;
 	}
 	else if (res && res->status == 206) {
 		std::cout << "Download resumed and completed!" << std::endl;
+		MarkClientDownloadProgress(ownerProcessId,
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)),
+			static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
+		MarkClientDownloadFinished(ownerProcessId);
 		return true;
 	}
 	else {
 		std::cerr << "Download failed with status code: " << (res ? res->status : -1) << std::endl;
+		MarkClientDownloadFinished(ownerProcessId);
 		return false;
 	}
 }
@@ -2059,7 +2268,18 @@ void WorkThread::WebServiceThread()
 		m_nCurrentDownload = 0;
 		PostMessage(m_hMainWnd, WM_DELETE_TRAY, 0, 0);
 		std::string strPage = req.get_param_value("page");
-		SetCurrentDownloadFile(str2wstr(strPage, static_cast<int>(strPage.length())));
+		const std::wstring pageW = str2wstr(strPage, static_cast<int>(strPage.length()));
+		SetCurrentDownloadFile(pageW);
+		DWORD requestPid = 0;
+		if (req.has_param("pid")) {
+			try {
+				requestPid = static_cast<DWORD>(std::stoul(req.get_param_value("pid")));
+			}
+			catch (...) {
+				requestPid = 0;
+			}
+		}
+		MarkClientDownloadStart(requestPid, pageW);
 		//因为strPage是'/' 而 m_mapFiles的key是'\' 所以需要转换
 		std::string keyPage = strPage;
 		std::replace(keyPage.begin(), keyPage.end(), '/', '\\');
@@ -2071,22 +2291,26 @@ void WorkThread::WebServiceThread()
 		if (it != m_mapFiles.end()) {
 			const std::string strRemotePage = JoinUrlPath(
 				m_strPage, std::to_string(it->second.m_qwTime) + "/" + strPage);
-			if (DownloadWithResume(strRemotePage, strPage)) {
+			m_nCurrentDownloadSize = static_cast<int>(it->second.m_qwSize);
+			m_nCurrentDownloadProgress = 0;
+			MarkClientDownloadProgress(requestPid, 0, static_cast<uint64_t>((std::max)(0, m_nCurrentDownloadSize)));
+			if (DownloadWithResume(strRemotePage, strPage, requestPid)) {
 				m_nCurrentDownload = 1;
+				MarkClientDownloadFinished(requestPid);
 				res.status = 200;
 				res.set_content("OK", "text/plain");
 			}
 			else {
+				MarkClientDownloadFinished(requestPid);
 				res.status = 502;
 				res.set_content("Download Failed", "text/plain");
 			}
 		}
 		else {
+			MarkClientDownloadFinished(requestPid);
 			res.status = 404;
 			res.set_content("Not Found", "text/plain");
 		}
-		PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
-		g_bRendering = false;
 	});
 
 	svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
@@ -2107,8 +2331,6 @@ void WorkThread::WebServiceThread()
 
 		res.status = 200;
 		res.set_content("OK", "text/plain");
-		PostMessage(m_hMainWnd, WM_MINIMIZE_TO_TRAY, 0, 0);
-		g_bRendering = false;
 	});
 
 	svr.Get("/Stop", [&svr, this](const httplib::Request& req, httplib::Response& res) {

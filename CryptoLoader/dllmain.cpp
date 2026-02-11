@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <wincrypt.h>
 #include <winhttp.h>
+#include <process.h>
 #include <detours/detours.h>
 
 #include <algorithm>
@@ -209,7 +210,8 @@ bool RequestDownloadFromLauncher(const std::string& page)
     };
 
     const std::string encodedPage = UrlEncode(page);
-    const std::string requestPath = std::string(kDownloadPath) + "?page=" + encodedPage;
+    const std::string requestPath = std::string(kDownloadPath) + "?page=" + encodedPage
+        + "&pid=" + std::to_string(_getpid());
     const std::wstring requestPathW = Utf8ToWide(requestPath);
     if (requestPathW.empty()) {
         return false;

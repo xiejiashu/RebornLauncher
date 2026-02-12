@@ -11,6 +11,7 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 #include <objbase.h>
+#include <objidl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -126,35 +127,69 @@ std::filesystem::path GetModuleDir() {
 	return std::filesystem::path(modulePath).parent_path();
 }
 
-bool IsPngFile(const std::filesystem::path& path) {
-	if (!path.has_extension()) {
-		return false;
+std::unique_ptr<Gdiplus::Bitmap> LoadPngFromResource(UINT resId, HINSTANCE hInstance) {
+	HRSRC hResource = FindResourceW(hInstance, MAKEINTRESOURCEW(resId), L"PNG");
+	if (!hResource) {
+		return {};
 	}
-	std::wstring ext = path.extension().wstring();
-	std::transform(ext.begin(), ext.end(), ext.begin(), towlower);
-	return ext == L".png";
+
+	DWORD imageSize = SizeofResource(hInstance, hResource);
+	HGLOBAL hGlobal = LoadResource(hInstance, hResource);
+	if (!hGlobal || imageSize == 0) {
+		return {};
+	}
+
+	void* pResourceData = LockResource(hGlobal);
+	if (!pResourceData) {
+		return {};
+	}
+
+	HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
+	if (!hBuffer) {
+		return {};
+	}
+
+	void* pBuffer = GlobalLock(hBuffer);
+	if (!pBuffer) {
+		GlobalFree(hBuffer);
+		return {};
+	}
+
+	memcpy_s(pBuffer, imageSize, pResourceData, imageSize);
+	GlobalUnlock(hBuffer);
+
+	IStream* pStream = nullptr;
+	if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) != S_OK) {
+		GlobalFree(hBuffer);
+		return {};
+	}
+
+	std::unique_ptr<Gdiplus::Bitmap> bitmap(new Gdiplus::Bitmap(pStream));
+	pStream->Release();
+	if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+		return {};
+	}
+
+	return bitmap;
 }
 
-bool LoadAnimationFramesFrom(const std::filesystem::path& frameDir) {
-	if (!std::filesystem::exists(frameDir) || !std::filesystem::is_directory(frameDir)) {
-		return false;
-	}
+bool LoadAnimationFramesFromResources() {
+	const UINT frameIds[] = {
+		IDB_PIG1,
+		IDB_PIG2,
+		IDB_PIG3,
+		IDB_PIG4,
+		IDB_PIG5,
+		IDB_PIG6,
+		IDB_PIG7,
+	};
 
-	std::vector<std::filesystem::path> files;
-	for (const auto& entry : std::filesystem::directory_iterator(frameDir)) {
-		if (entry.is_regular_file() && IsPngFile(entry.path())) {
-			files.push_back(entry.path());
-		}
-	}
-	if (files.empty()) {
-		return false;
-	}
-
-	std::sort(files.begin(), files.end());
 	std::vector<std::unique_ptr<Gdiplus::Bitmap>> loaded;
-	loaded.reserve(files.size());
-	for (const auto& file : files) {
-		auto bitmap = std::make_unique<Gdiplus::Bitmap>(file.c_str());
+	loaded.reserve(sizeof(frameIds) / sizeof(frameIds[0]));
+
+	HINSTANCE instance = g_hInstance ? g_hInstance : GetModuleHandle(nullptr);
+	for (const UINT resId : frameIds) {
+		std::unique_ptr<Gdiplus::Bitmap> bitmap = LoadPngFromResource(resId, instance);
 		if (bitmap && bitmap->GetLastStatus() == Gdiplus::Ok && bitmap->GetWidth() > 0 && bitmap->GetHeight() > 0) {
 			loaded.push_back(std::move(bitmap));
 		}
@@ -168,48 +203,11 @@ bool LoadAnimationFramesFrom(const std::filesystem::path& frameDir) {
 	return true;
 }
 
-std::vector<std::filesystem::path> BuildAnimationSearchPaths() {
-	std::vector<std::filesystem::path> paths;
-	const auto moduleDir = GetModuleDir();
-	const auto cwd = std::filesystem::current_path();
-
-	auto add = [&paths](const std::filesystem::path& p) {
-		if (std::find(paths.begin(), paths.end(), p) == paths.end()) {
-			paths.push_back(p);
-		}
-	};
-
-	add(moduleDir / "Texture" / "PiaoPiaoPig");
-	add(moduleDir / "RebornLauncher" / "Texture" / "PiaoPiaoPig");
-	add(cwd / "Texture" / "PiaoPiaoPig");
-	add(cwd / "RebornLauncher" / "Texture" / "PiaoPiaoPig");
-
-	std::filesystem::path walk = moduleDir;
-	for (int i = 0; i < 6; ++i) {
-		add(walk / "Texture" / "PiaoPiaoPig");
-		add(walk / "RebornLauncher" / "Texture" / "PiaoPiaoPig");
-		if (!walk.has_parent_path()) {
-			break;
-		}
-		const auto parent = walk.parent_path();
-		if (parent == walk) {
-			break;
-		}
-		walk = parent;
-	}
-
-	return paths;
-}
-
 void EnsureAnimationFramesLoaded() {
 	if (!g_animFrames.empty()) {
 		return;
 	}
-	for (const auto& path : BuildAnimationSearchPaths()) {
-		if (LoadAnimationFramesFrom(path)) {
-			return;
-		}
-	}
+	LoadAnimationFramesFromResources();
 }
 
 std::wstring GetDisplayFileName(const std::wstring& raw) {
@@ -961,26 +959,19 @@ bool IsProcessRunning(const TCHAR* exePath) {
     return false;
 }
 
-void MoveToDirectory(LPCTSTR lpTargetDir) {
-    // TCHAR currentPath[MAX_PATH];
-    // GetModuleFileName(g_hInstance, currentPath, MAX_PATH);
-	// TCHAR* FileName = PathFindFileName(g_strCurrentModulePath.c_str());
-    TCHAR newPath[MAX_PATH];
-    swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
-	SetFileAttributes(newPath, FILE_ATTRIBUTE_NORMAL);
-
-    if (!DeleteFile(newPath))
+void MoveToDirectory(LPCTSTR lpTargetDir,LPCTSTR oldPath) {
+	SetFileAttributes(oldPath, FILE_ATTRIBUTE_NORMAL);
+    if (!DeleteFile(oldPath))
     {
 		std::wcout << __FILEW__ << ":" << __LINE__
-			<< TEXT("Delete failed: ") << newPath
+			<< TEXT("Delete failed: ") << oldPath
 			<< TEXT(" err:") << GetLastError() << std::endl;
     }
-    if (!CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE))
+    if (!CopyFile(g_strCurrentModulePath.c_str(), oldPath, TRUE))
     {
-        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << newPath
-            << TEXT(" Copy failed: ") << newPath << TEXT(" err:") << GetLastError() << std::endl;
+        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << oldPath
+            << TEXT(" Copy failed: ") << oldPath << TEXT(" err:") << GetLastError() << std::endl;
     }
-
 	WriteProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir);
 }
 
@@ -990,30 +981,33 @@ bool IsInMapleFireRebornDir() {
 
     // TCHAR* fileName = PathFindFileName(filePath);
 
-    std::cout << "2222222222222222222222222222" << std::endl;
+	// 如果文件在路径 MapleFireReborn 或 RebornV 目录下，则认为是在正确目录下
+    // std::cout << "2222222222222222222222222222" << std::endl;
 	std::wstring str = g_strCurrentModulePath.c_str();
-	if (str.find(TEXT("MapleFireReborn")) != std::string::npos
-        || str.find(TEXT("RebornV")) != std::string::npos)
-    {
-		// 如果不是处于硬盘根目录下，且目录下只有当前可执行文件，则认为是在正确目录下
-		std::filesystem::path currentPath = std::filesystem::path(g_strCurrentModulePath).parent_path();
-		if (currentPath.has_parent_path()) {
-			bool onlyCurrentExe = true;
-			for (const auto& entry : std::filesystem::directory_iterator(currentPath)) {
-				if (entry.path().filename() == g_strCurrentExeName) {
-					continue;
-				}
-				onlyCurrentExe = false;
-				break;
-			}
-			if (onlyCurrentExe) {
-				return true;
-			}
+	// if (str.find(TEXT("MapleFireReborn")) != std::string::npos
+    //     || str.find(TEXT("RebornV")) != std::string::npos)
+    // {
+	std::filesystem::path currentPath = std::filesystem::path(g_strCurrentModulePath).parent_path();
+	// 如果是桌面就返回false
+	wchar_t desktopPath[MAX_PATH]{};
+	HRESULT hr = SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, SHGFP_TYPE_CURRENT, desktopPath);
+	if (SUCCEEDED(hr)) {
+		std::error_code ec;
+		if (std::filesystem::equivalent(currentPath, std::filesystem::path(desktopPath), ec) && !ec) {
+			return false;
 		}
-        std::cout << "aaa" << std::endl;
-        std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
-        return true;
-    }
+	}
+	// 如果处于硬盘根目录（例如 C:\ 或 \\server\share\）就返回false
+	// root_path() 对于盘符路径是 "C:\\"，对于 UNC 是 "\\\\server\\share\\"
+	if (!currentPath.empty() && currentPath != currentPath.root_path()) {
+		return true;
+	}
+	// 如果不是处于硬盘根目录下，则认为是在正确目录下
+
+    std::cout << "aaa" << std::endl;
+    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
+    // 	return true;
+    // }
 
     std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__
         << TEXT(" failed:") << __LINE__ << TEXT(" ") << str << std::endl;
@@ -1101,9 +1095,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 //#endif
 
 #ifdef _DEBUG
-    AllocConsole();
-    FILE* stream = NULL;
-    freopen_s(&stream, "CONOUT$", "w", stdout); //CONOUT$
+	AllocConsole();
+	FILE* stream = nullptr;
+	freopen_s(&stream, "CONOUT$", "w", stdout);
+	freopen_s(&stream, "CONOUT$", "w", stderr);
 #endif
 
 
@@ -1125,47 +1120,58 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 #ifndef _DEBUG
     if (!IsInMapleFireRebornDir())
     {
-       //  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
-		LPCTSTR lpTargetDir = TEXT("C:\\MapleFireReborn ");
-        const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("F:\\MapleFireReborn"),TEXT("G:\\MapleFireReborn"),TEXT("C:\\MapleFireReborn") };
-        for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-			CreateDirectory(dirs[i], NULL);
-			if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
-				// MoveToDirectory(dirs[i]);
-				lpTargetDir = dirs[i];
+		do {
+			//  MessageBox(NULL, TEXT("22222222222222222222"), TEXT("err"), MB_OK);
+			LPCTSTR lpTargetDir = TEXT("C:\\MapleFireReborn");
+			const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("F:\\MapleFireReborn"),TEXT("G:\\MapleFireReborn"),TEXT("C:\\MapleFireReborn") };
+			for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+				CreateDirectory(dirs[i], NULL);
+				if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
+					// MoveToDirectory(dirs[i]);
+					lpTargetDir = dirs[i];
+					break;
+				}
+			}
+
+			TCHAR szGamePath[MAX_PATH] = { 0 };
+			GetProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
+
+			TCHAR oldPath[MAX_PATH];
+			swprintf(oldPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
+
+			//如果两路径相等则说明已经在正确目录下，直接跳出
+			if (_tcsicmp(oldPath, g_strCurrentModulePath.c_str()) == 0) {
 				break;
 			}
-		}
 
-        TCHAR szGamePath[MAX_PATH] = { 0 };
-        GetProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
-        MoveToDirectory(szGamePath);
+			MoveToDirectory(szGamePath, oldPath);
+			// MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
 
-        // MessageBox(NULL, TEXT("3333333333333333333"), TEXT("err"), MB_OK);
+			TCHAR shortcutPath[MAX_PATH]{};
+			LPITEMIDLIST pidlDesktop = nullptr;
+			HRESULT hrDesktop = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
+			if (SUCCEEDED(hrDesktop) && pidlDesktop) {
+				if (SHGetPathFromIDList(pidlDesktop, shortcutPath)) {
+					swprintf(shortcutPath, TEXT("%s\\MapleFireReborn.lnk"), shortcutPath);
+					CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
+				}
+				CoTaskMemFree(pidlDesktop);
+				pidlDesktop = nullptr;
+			}
+			else {
+				std::wcout << __FILEW__ << TEXT(":") << __LINE__
+					<< TEXT(" SHGetSpecialFolderLocation(CSIDL_DESKTOP) failed, skip shortcut. err=")
+					<< hrDesktop << std::endl;
+			}
+			// MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
 
-		TCHAR shortcutPath[MAX_PATH];
-		LPITEMIDLIST pidlDesktop;
-		HRESULT hr = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
-		if (FAILED(hr)) {
-			return -1;
-            // MessageBox(NULL, TEXT("44444444444444444444444"), TEXT("err"), MB_OK);
-		}
-		SHGetPathFromIDList(pidlDesktop, shortcutPath);
-		swprintf(shortcutPath, TEXT("%s\\MapleFireReborn.lnk"), shortcutPath);
-		// TCHAR currentPath[MAX_PATH];
-		// GetModuleFileName(hInstance, currentPath, MAX_PATH);
-		// TCHAR* fileName = PathFindFileName(g_strCurrentModulePath.c_str());
-		CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
-        // MessageBox(NULL, TEXT("55555555555555"), TEXT("err"), MB_OK);
-
-		TCHAR newPath[MAX_PATH];
-		swprintf(newPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
-        if (!IsProcessRunning(newPath)) {
-			WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
-			ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
-            ExitProcess(0);
-        }
-        return 0;
+			if (!IsProcessRunning(oldPath)) {
+				WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
+				ShellExecute(NULL, TEXT("open"), oldPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
+				ExitProcess(0);
+			}
+			return 0;
+		} while (false);
     }
     else
     {

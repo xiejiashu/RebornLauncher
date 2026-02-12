@@ -13,7 +13,7 @@ ResourceManager::~ResourceManager()
 	{
 		if (it.second)
 		{
-			DeleteObject(it.second);
+            delete it.second;
 		}
 	}
 }
@@ -51,7 +51,7 @@ const Gdiplus::Bitmap* ResourceManager::GetBitmap(int resId)
 Gdiplus::Bitmap* ResourceManager::LoadPngFromResource(UINT resId,HINSTANCE hInstance) {
     Gdiplus::Bitmap* pBitmap = nullptr;
 
-    HRSRC hResource = FindResource(hInstance, MAKEINTRESOURCE(resId), L"PNG");
+    HRSRC hResource = FindResourceW(hInstance, MAKEINTRESOURCEW(resId), L"PNG");
     if (!hResource) {
         return nullptr;
     }
@@ -67,24 +67,33 @@ Gdiplus::Bitmap* ResourceManager::LoadPngFromResource(UINT resId,HINSTANCE hInst
         return nullptr;
     }
 
-    HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
-    if (hBuffer) {
+        HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, imageSize);
+        if (!hBuffer) {
+		return nullptr;
+        }
+
         void* pBuffer = GlobalLock(hBuffer);
+        if (!pBuffer) {
+		GlobalFree(hBuffer);
+		return nullptr;
+        }
+
         memcpy_s(pBuffer, imageSize, pResourceData, imageSize);
         GlobalUnlock(hBuffer);
 
         IStream* pStream = nullptr;
-        if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) == S_OK) {
-            pBitmap = new Gdiplus::Bitmap(pStream);
-            if (pBitmap->GetLastStatus() != Gdiplus::Ok) {
-                delete pBitmap;
-                pBitmap = nullptr;
-            }
-            pStream->Release();
+        if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) != S_OK) {
+		GlobalFree(hBuffer);
+		return nullptr;
         }
 
-        GlobalFree(hBuffer);
-    }
+        // Stream owns hBuffer when fDeleteOnRelease=TRUE.
+        pBitmap = new Gdiplus::Bitmap(pStream);
+        if (pBitmap->GetLastStatus() != Gdiplus::Ok) {
+		delete pBitmap;
+		pBitmap = nullptr;
+        }
+        pStream->Release();
 
     return pBitmap;
 }

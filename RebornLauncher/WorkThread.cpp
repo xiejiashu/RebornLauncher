@@ -29,7 +29,8 @@ extern bool IsProcessRunning(DWORD dwProcessId);
 namespace {
 
 constexpr const char* kBootstrapHost = "https://gitee.com";
-constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
+// constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
+constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/RemoteEncrypt.txt";
 constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Map";
 constexpr size_t kVersionMapMaxBytes = 8 * 1024 * 1024;
 
@@ -2177,9 +2178,16 @@ void WorkThread::WriteVersionToMapping(std::string& m_strRemoteVersionJson)
 
 bool WorkThread::LaunchGameClient()
 {
-	STARTUPINFO si = { sizeof(si) };
+	STARTUPINFOA si = { sizeof(si) };
 	PROCESS_INFORMATION pi{};
-	if (!CreateProcess(m_szProcessName, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+	// 获取当前目录作为工作目录
+	char currentDir[MAX_PATH] = { 0 };
+	GetCurrentDirectoryA(MAX_PATH, currentDir);
+	// 绝对路径启动，避免当前目录被篡改导致的DLL劫持问题 m_szProcessName是宽字节的路径，CreateProcess需要转换成窄字节路径
+	char exePathBuf[MAX_PATH] = { 0 };
+	std::string exePathStr = wstr2str(m_szProcessName);
+	strncpy_s(exePathBuf, exePathStr.c_str(), MAX_PATH - 1);
+	if (!CreateProcessA(NULL, exePathBuf, NULL, NULL, FALSE, 0, NULL, currentDir, &si, &pi)) {
 		std::cerr << "CreateProcess failed, error: " << GetLastError() << std::endl;
 		return false;
 	}

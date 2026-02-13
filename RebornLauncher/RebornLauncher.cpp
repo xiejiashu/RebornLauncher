@@ -115,6 +115,7 @@ struct PigOverlayState {
 std::vector<PigOverlayState> g_overlayPigs;
 RECT g_overlayBoundsScreen{};
 bool g_followingGameWindows = false;
+bool g_idleTopmost = false;
 HANDLE g_hSingleInstanceMutex = NULL;
 constexpr const wchar_t* kLauncherSingleInstanceMutexName = L"Local\\MapleFireReborn.RebornLauncher.SingleInstance";
 
@@ -340,14 +341,20 @@ void RefreshPigOverlayState(WorkThread& workThread) {
 			overlayW, overlayH,
 			SWP_NOACTIVATE | SWP_SHOWWINDOW);
 		g_followingGameWindows = true;
+		g_idleTopmost = false;
 	}
-	else if (g_followingGameWindows) {
-		g_overlayPigs.clear();
-		g_overlayBoundsScreen = {};
-		g_followingGameWindows = false;
-		SetWindowPos(g_hWnd, HWND_NOTOPMOST,
-			g_ptWindow.x, g_ptWindow.y, g_szWindow.cx, g_szWindow.cy,
-			SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	else {
+		if (g_followingGameWindows) {
+			g_overlayPigs.clear();
+			g_overlayBoundsScreen = {};
+			g_followingGameWindows = false;
+		}
+		if (!g_idleTopmost) {
+			SetWindowPos(g_hWnd, HWND_TOPMOST,
+				g_ptWindow.x, g_ptWindow.y, g_szWindow.cx, g_szWindow.cy,
+				SWP_NOACTIVATE | SWP_SHOWWINDOW);
+			g_idleTopmost = true;
+		}
 	}
 }
 

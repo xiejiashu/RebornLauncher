@@ -16,9 +16,11 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 constexpr uintptr_t kTargetAddr = 0x5081A080;
 constexpr int kLauncherPort = 12345;
@@ -26,6 +28,10 @@ constexpr const char* kDownloadPath = "/download";
 constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Map";
 // 5 minutes
 constexpr DWORD kVersionMapRefreshIntervalMs =5 * 60 * 1000;
+// Prevent repeated network requests for the same file in a hot loop.
+constexpr DWORD kDownloadRequestCooldownMs = 3000;
+// Current directory very rarely changes at runtime; cache it for hot hook path.
+constexpr DWORD kCurrentDirRefreshIntervalMs = 2000;
 
 #if !defined(_M_IX86)
 #error CryptoLoader must be built as Win32 (x86).
@@ -49,6 +55,23 @@ static NameSpaceSub5081A080 g_sub_5081A080 =
 static std::map<std::string, std::string> g_mapFiles;
 static std::mutex g_mapFilesMutex;
 static DWORD g_lastMapRefreshTick = 0;
+static std::unordered_map<std::string, DWORD> g_downloadRequestTicks;
+static std::mutex g_downloadRequestTicksMutex;
+
+struct FileMetadataCacheEntry {
+    bool exists = false;
+    ULONGLONG fileSize = 0;
+    FILETIME lastWriteTime{};
+    std::string expectedMd5;
+    bool md5Match = false;
+};
+
+static std::unordered_map<std::string, FileMetadataCacheEntry> g_fileCheckCache;
+static std::mutex g_fileCheckCacheMutex;
+static std::string g_currentDirectoryKey;
+static std::string g_currentDirectoryPrefix;
+static std::mutex g_currentDirectoryMutex;
+static DWORD g_lastCurrentDirRefreshTick = 0;
 
 namespace {
 
@@ -171,19 +194,138 @@ std::wstring Utf8ToWide(const std::string& text)
     return wide;
 }
 
-bool IsFileInCurrentDirectory(const std::filesystem::path& absolutePath)
+void RefreshCurrentDirectoryCacheIfNeeded()
 {
+    const DWORD now = GetTickCount();
+    {
+        std::lock_guard<std::mutex> lock(g_currentDirectoryMutex);
+        if (!g_currentDirectoryKey.empty() &&
+            static_cast<DWORD>(now - g_lastCurrentDirRefreshTick) < kCurrentDirRefreshIntervalMs) {
+            return;
+        }
+        g_lastCurrentDirRefreshTick = now;
+    }
+
     std::error_code ec;
     const std::filesystem::path currentDir = std::filesystem::current_path(ec);
-    if (ec) {
+    std::string key;
+    std::string prefix;
+    if (!ec) {
+        key = NormalizePathKey(currentDir.lexically_normal());
+        if (!key.empty() && key.back() == '\\') {
+            key.pop_back();
+        }
+        if (!key.empty()) {
+            prefix = key + "\\";
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(g_currentDirectoryMutex);
+    g_currentDirectoryKey = std::move(key);
+    g_currentDirectoryPrefix = std::move(prefix);
+}
+
+bool IsPathInCurrentDirectoryKey(const std::string& pathKey)
+{
+    if (pathKey.empty()) {
         return false;
     }
-    std::filesystem::path rel = std::filesystem::relative(absolutePath, currentDir, ec);
-    if (ec || rel.empty()) {
+
+    RefreshCurrentDirectoryCacheIfNeeded();
+
+    std::lock_guard<std::mutex> lock(g_currentDirectoryMutex);
+    if (g_currentDirectoryKey.empty()) {
         return false;
     }
-    const std::string relText = rel.generic_string();
-    return relText.rfind("..", 0) != 0;
+    return pathKey == g_currentDirectoryKey || pathKey.rfind(g_currentDirectoryPrefix, 0) == 0;
+}
+
+struct FileMetadataSnapshot {
+    bool exists = false;
+    ULONGLONG fileSize = 0;
+    FILETIME lastWriteTime{};
+};
+
+bool FileTimeEquals(const FILETIME& lhs, const FILETIME& rhs)
+{
+    return lhs.dwLowDateTime == rhs.dwLowDateTime &&
+        lhs.dwHighDateTime == rhs.dwHighDateTime;
+}
+
+bool ReadFileMetadataFast(const std::filesystem::path& absolutePath, FileMetadataSnapshot& metadata)
+{
+    WIN32_FILE_ATTRIBUTE_DATA attrs{};
+    const std::wstring filePath = absolutePath.wstring();
+    if (GetFileAttributesExW(filePath.c_str(), GetFileExInfoStandard, &attrs)) {
+        metadata.exists = true;
+        metadata.fileSize = (static_cast<ULONGLONG>(attrs.nFileSizeHigh) << 32) | attrs.nFileSizeLow;
+        metadata.lastWriteTime = attrs.ftLastWriteTime;
+        return true;
+    }
+
+    const DWORD lastError = GetLastError();
+    if (lastError == ERROR_FILE_NOT_FOUND ||
+        lastError == ERROR_PATH_NOT_FOUND ||
+        lastError == ERROR_INVALID_NAME) {
+        metadata.exists = false;
+        metadata.fileSize = 0;
+        metadata.lastWriteTime = {};
+        return true;
+    }
+    return false;
+}
+
+bool TryGetCachedMd5Result(
+    const std::string& key,
+    const std::string& expectedMd5,
+    const FileMetadataSnapshot& metadata,
+    bool& needDownload)
+{
+    std::lock_guard<std::mutex> lock(g_fileCheckCacheMutex);
+    const auto it = g_fileCheckCache.find(key);
+    if (it == g_fileCheckCache.end()) {
+        return false;
+    }
+
+    const FileMetadataCacheEntry& entry = it->second;
+    if (entry.expectedMd5 != expectedMd5 ||
+        entry.exists != metadata.exists ||
+        entry.fileSize != metadata.fileSize ||
+        !FileTimeEquals(entry.lastWriteTime, metadata.lastWriteTime)) {
+        return false;
+    }
+
+    needDownload = !entry.md5Match;
+    return true;
+}
+
+void UpdateCachedMd5Result(
+    const std::string& key,
+    const std::string& expectedMd5,
+    const FileMetadataSnapshot& metadata,
+    bool md5Match)
+{
+    FileMetadataCacheEntry entry;
+    entry.exists = metadata.exists;
+    entry.fileSize = metadata.fileSize;
+    entry.lastWriteTime = metadata.lastWriteTime;
+    entry.expectedMd5 = expectedMd5;
+    entry.md5Match = md5Match;
+
+    std::lock_guard<std::mutex> lock(g_fileCheckCacheMutex);
+    g_fileCheckCache[key] = std::move(entry);
+}
+
+bool ShouldRequestDownloadNow(const std::string& key)
+{
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lock(g_downloadRequestTicksMutex);
+    DWORD& lastTick = g_downloadRequestTicks[key];
+    if (lastTick != 0 && static_cast<DWORD>(now - lastTick) < kDownloadRequestCooldownMs) {
+        return false;
+    }
+    lastTick = now;
+    return true;
 }
 
 bool RequestDownloadFromLauncher(const std::string& page)
@@ -267,6 +409,32 @@ bool RequestDownloadFromLauncher(const std::string& page)
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     return ok;
+}
+
+unsigned __stdcall DownloadRequestThreadProc(void* context)
+{
+    std::unique_ptr<std::string> page(static_cast<std::string*>(context));
+    if (page && !page->empty()) {
+        RequestDownloadFromLauncher(*page);
+    }
+    return 0;
+}
+
+void RequestDownloadFromLauncherAsync(std::string page)
+{
+    if (page.empty()) {
+        return;
+    }
+
+    std::unique_ptr<std::string> pagePtr = std::make_unique<std::string>(std::move(page));
+    const uintptr_t threadHandle = _beginthreadex(nullptr, 0, &DownloadRequestThreadProc, pagePtr.get(), 0, nullptr);
+    if (threadHandle == 0) {
+        RequestDownloadFromLauncher(*pagePtr);
+        return;
+    }
+
+    pagePtr.release();
+    CloseHandle(reinterpret_cast<HANDLE>(threadHandle));
 }
 
 bool ParseVersionMapPayload(const std::string& payload, std::map<std::string, std::string>& outMap)
@@ -353,9 +521,8 @@ void RefreshVersionMapCacheIfNeeded()
     }
 }
 
-std::string FindExpectedMd5(const std::filesystem::path& absolutePath)
+std::string FindExpectedMd5ByKey(const std::string& key)
 {
-    const std::string key = NormalizePathKey(absolutePath);
     if (key.empty()) {
         return {};
     }
@@ -379,23 +546,46 @@ void HandleHookedFileCheck(const CHAR* lpFileName)
             }
             absolutePath = absolutePath.lexically_normal();
 
-            if (IsFileInCurrentDirectory(absolutePath)) {
-                RefreshVersionMapCacheIfNeeded();
-                const std::string expectedMd5 = FindExpectedMd5(absolutePath);
+            const std::string normalizedKey = NormalizePathKey(absolutePath);
+            if (IsPathInCurrentDirectoryKey(normalizedKey)) {
 
-                std::error_code ec;
-                const bool exists = std::filesystem::exists(absolutePath, ec) && !ec;
-                bool needDownload = !exists;
-                if (exists && !expectedMd5.empty()) {
-                    const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
-                    if (!localMd5.empty()) {
-                        needDownload = localMd5 != expectedMd5;
+                RefreshVersionMapCacheIfNeeded();
+                const std::string expectedMd5 = FindExpectedMd5ByKey(normalizedKey);
+
+                FileMetadataSnapshot metadata;
+                bool metadataOk = ReadFileMetadataFast(absolutePath, metadata);
+                if (!metadataOk) {
+                    std::error_code ec;
+                    metadata.exists = std::filesystem::exists(absolutePath, ec) && !ec;
+                    if (!metadata.exists) {
+                        metadata.fileSize = 0;
+                        metadata.lastWriteTime = {};
+                    }
+                }
+
+                bool needDownload = !metadata.exists;
+                if (metadata.exists && !expectedMd5.empty()) {
+                    bool cacheHit = false;
+                    if (metadataOk) {
+                        cacheHit = TryGetCachedMd5Result(normalizedKey, expectedMd5, metadata, needDownload);
+                    }
+
+                    if (!cacheHit) {
+                        const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
+                        if (!localMd5.empty()) {
+                            needDownload = localMd5 != expectedMd5;
+                            if (metadataOk) {
+                                UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, !needDownload);
+                            }
+                        }
                     }
                 }
 
                 if (needDownload) {
                     const std::string page = BuildDownloadPage(inputPath, absolutePath);
-                    RequestDownloadFromLauncher(page);
+                    if (ShouldRequestDownloadNow(normalizedKey)) {
+                        RequestDownloadFromLauncherAsync(page);
+                    }
                 }
             }
         }

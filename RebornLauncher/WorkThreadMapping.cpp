@@ -50,7 +50,7 @@ std::string NormalizeMappingPathKey(std::filesystem::path path) {
 
 void WorkThread::WriteDataToMapping()
 {
-	for (auto& [strPage, config] : m_mapFiles)
+	for (auto& [strPage, config] : m_versionState.files)
 	{
 		std::string strMemoryName = strPage;
 		std::replace(strMemoryName.begin(), strMemoryName.end(), '\\', '_');
@@ -64,7 +64,7 @@ void WorkThread::WriteDataToMapping()
 				((char*)lpBaseAddress)[config.m_strMd5.length()] = '\0';
 				UnmapViewOfFile(lpBaseAddress);
 			}
-			m_hFileMappings.push_back(hFileMapping);
+			m_runtimeState.fileMappings.push_back(hFileMapping);
 		}
 	}
 }
@@ -129,28 +129,28 @@ void WorkThread::WriteVersionToMapping(std::string& m_strRemoteVersionJson)
 		return;
 	}
 
-	if (m_hMappingVersion) {
-		CloseHandle(m_hMappingVersion);
-		m_hMappingVersion = nullptr;
+	if (m_runtimeState.mappingVersion) {
+		CloseHandle(m_runtimeState.mappingVersion);
+		m_runtimeState.mappingVersion = nullptr;
 	}
 
-	m_hMappingVersion = CreateFileMappingA(
+	m_runtimeState.mappingVersion = CreateFileMappingA(
 		INVALID_HANDLE_VALUE,
 		nullptr,
 		PAGE_READWRITE,
 		0,
 		static_cast<DWORD>(payload.size() + 1),
 		kVersionMapMappingName);
-	if (!m_hMappingVersion) {
+	if (!m_runtimeState.mappingVersion) {
 		std::cout << "WriteVersionToMapping: CreateFileMappingA failed, error=" << GetLastError() << std::endl;
 		return;
 	}
 
-	void* view = MapViewOfFile(m_hMappingVersion, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+	void* view = MapViewOfFile(m_runtimeState.mappingVersion, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 	if (!view) {
 		std::cout << "WriteVersionToMapping: MapViewOfFile failed, error=" << GetLastError() << std::endl;
-		CloseHandle(m_hMappingVersion);
-		m_hMappingVersion = nullptr;
+		CloseHandle(m_runtimeState.mappingVersion);
+		m_runtimeState.mappingVersion = nullptr;
 		return;
 	}
 

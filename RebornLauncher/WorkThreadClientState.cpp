@@ -46,42 +46,42 @@ void UpdateClientDownloadState(std::vector<std::shared_ptr<tagGameInfo>>& gameIn
 
 int WorkThread::GetTotalDownload() const
 {
-	return m_nTotalDownload;
+	return m_downloadState.totalDownload;
 }
 
 int WorkThread::GetCurrentDownload() const
 {
-	return m_nCurrentDownload;
+	return m_downloadState.currentDownload;
 }
 
 std::wstring WorkThread::GetCurrentDownloadFile()
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	return m_strCurrentDownload;
+	std::lock_guard<std::mutex> lock(m_downloadState.mutex);
+	return m_downloadState.currentFile;
 }
 
 void WorkThread::SetCurrentDownloadFile(const std::wstring& strFile)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
-	m_strCurrentDownload = strFile;
+	std::lock_guard<std::mutex> lock(m_downloadState.mutex);
+	m_downloadState.currentFile = strFile;
 }
 
 int WorkThread::GetCurrentDownloadSize() const
 {
-	return m_nCurrentDownloadSize;
+	return m_downloadState.currentDownloadSize;
 }
 
 int WorkThread::GetCurrentDownloadProgress() const
 {
-	return m_nCurrentDownloadProgress;
+	return m_downloadState.currentDownloadProgress;
 }
 
 std::vector<tagGameInfo> WorkThread::GetGameInfosSnapshot() const
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
 	std::vector<tagGameInfo> snapshot;
-	snapshot.reserve(m_gameInfos.size());
-	for (const auto& info : m_gameInfos) {
+	snapshot.reserve(m_runtimeState.gameInfos.size());
+	for (const auto& info : m_runtimeState.gameInfos) {
 		if (!info) {
 			continue;
 		}
@@ -92,8 +92,8 @@ std::vector<tagGameInfo> WorkThread::GetGameInfosSnapshot() const
 
 void WorkThread::MarkClientDownloadStart(DWORD processId, const std::wstring& fileName)
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	UpdateClientDownloadState(m_gameInfos, processId, [&](tagGameInfo& info) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	UpdateClientDownloadState(m_runtimeState.gameInfos, processId, [&](tagGameInfo& info) {
 		info.downloading = true;
 		info.downloadFile = fileName;
 		info.downloadDoneBytes = 0;
@@ -103,8 +103,8 @@ void WorkThread::MarkClientDownloadStart(DWORD processId, const std::wstring& fi
 
 void WorkThread::MarkClientDownloadProgress(DWORD processId, uint64_t downloaded, uint64_t total)
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	UpdateClientDownloadState(m_gameInfos, processId, [&](tagGameInfo& info) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	UpdateClientDownloadState(m_runtimeState.gameInfos, processId, [&](tagGameInfo& info) {
 		info.downloading = true;
 		info.downloadDoneBytes = downloaded;
 		info.downloadTotalBytes = total;
@@ -113,8 +113,8 @@ void WorkThread::MarkClientDownloadProgress(DWORD processId, uint64_t downloaded
 
 void WorkThread::MarkClientDownloadFinished(DWORD processId)
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	UpdateClientDownloadState(m_gameInfos, processId, [](tagGameInfo& info) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	UpdateClientDownloadState(m_runtimeState.gameInfos, processId, [](tagGameInfo& info) {
 		info.downloading = false;
 		info.downloadDoneBytes = 0;
 		info.downloadTotalBytes = 0;
@@ -148,8 +148,8 @@ bool WorkThread::LaunchGameClient()
 	gameInfo->dwProcessId = pi.dwProcessId;
 
 	{
-		std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-		m_gameInfos.push_back(gameInfo);
+		std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+		m_runtimeState.gameInfos.push_back(gameInfo);
 	}
 
 	std::cout << "Client launched, pid=" << pi.dwProcessId << std::endl;
@@ -158,8 +158,8 @@ bool WorkThread::LaunchGameClient()
 
 void WorkThread::CleanupExitedGameInfos()
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	m_gameInfos.erase(std::remove_if(m_gameInfos.begin(), m_gameInfos.end(),
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	m_runtimeState.gameInfos.erase(std::remove_if(m_runtimeState.gameInfos.begin(), m_runtimeState.gameInfos.end(),
 		[](const std::shared_ptr<tagGameInfo>& info) {
 			if (!info) {
 				return true;
@@ -174,13 +174,13 @@ void WorkThread::CleanupExitedGameInfos()
 			info->dwProcessId = 0;
 			return true;
 		}),
-		m_gameInfos.end());
+		m_runtimeState.gameInfos.end());
 }
 
 bool WorkThread::HasRunningGameProcess()
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	for (const auto& info : m_gameInfos) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	for (const auto& info : m_runtimeState.gameInfos) {
 		if (info && info->dwProcessId != 0 && IsProcessRunning(info->dwProcessId)) {
 			return true;
 		}
@@ -190,8 +190,8 @@ bool WorkThread::HasRunningGameProcess()
 
 void WorkThread::TerminateAllGameProcesses()
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	for (const auto& info : m_gameInfos) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	for (const auto& info : m_runtimeState.gameInfos) {
 		if (!info) {
 			continue;
 		}
@@ -209,28 +209,28 @@ void WorkThread::TerminateAllGameProcesses()
 		}
 		info->dwProcessId = 0;
 	}
-	m_gameInfos.clear();
+	m_runtimeState.gameInfos.clear();
 }
 
 void WorkThread::Stop()
 {
 	httplib::Client cli("localhost", 12345);
 	cli.Get("/Stop");
-	m_bRun = FALSE;
-	if (m_client) {
-		m_client->stop();
-		m_client = nullptr;
+	m_runtimeState.run = FALSE;
+	if (m_networkState.client) {
+		m_networkState.client->stop();
+		m_networkState.client.reset();
 	}
 }
 
 void WorkThread::UpdateP2PSettings(const P2PSettings& settings)
 {
-	std::lock_guard<std::mutex> lock(m_p2pMutex);
-	m_p2pSettings = settings;
+	std::lock_guard<std::mutex> lock(m_networkState.p2pMutex);
+	m_networkState.p2pSettings = settings;
 }
 
 P2PSettings WorkThread::GetP2PSettings() const
 {
-	std::lock_guard<std::mutex> lock(m_p2pMutex);
-	return m_p2pSettings;
+	std::lock_guard<std::mutex> lock(m_networkState.p2pMutex);
+	return m_networkState.p2pSettings;
 }

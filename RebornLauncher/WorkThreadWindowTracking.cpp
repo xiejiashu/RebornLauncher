@@ -52,8 +52,8 @@ HWND WorkThread::FindGameWindowByProcessId(DWORD processId) const
 
 void WorkThread::UpdateGameMainWindows()
 {
-	std::lock_guard<std::mutex> lock(m_gameInfosMutex);
-	for (const auto& info : m_gameInfos) {
+	std::lock_guard<std::mutex> lock(m_runtimeState.gameInfosMutex);
+	for (const auto& info : m_runtimeState.gameInfos) {
 		if (!info || info->dwProcessId == 0) {
 			continue;
 		}

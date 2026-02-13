@@ -160,9 +160,9 @@ void WorkThread::Extract7z(const std::string& filename, const std::string& destP
 {
 	std::vector<DataBlock> allFiles = ScanArchive(filename);
 
-	m_nCurrentDownloadSize = static_cast<int>(allFiles.size());
-	m_nCurrentDownloadProgress = 0;
-	if (m_nCurrentDownloadSize > 0)
+	m_downloadState.currentDownloadSize = static_cast<int>(allFiles.size());
+	m_downloadState.currentDownloadProgress = 0;
+	if (m_downloadState.currentDownloadSize > 0)
 	{
 		const unsigned int hwThreads = std::thread::hardware_concurrency();
 		const size_t preferredThreads = hwThreads == 0 ? 1 : static_cast<size_t>(hwThreads);
@@ -237,10 +237,10 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 	const std::string extractRootPrefix = DetermineExeRootPrefix(files);
 
 	if (!extractRootPrefix.empty()) {
-		m_extractRootPrefix = extractRootPrefix;
+		m_versionState.extractRootPrefix = extractRootPrefix;
 	}
 	else {
-		m_extractRootPrefix.clear();
+		m_versionState.extractRootPrefix.clear();
 	}
 
 	return files;
@@ -249,7 +249,7 @@ std::vector<DataBlock> WorkThread::ScanArchive(const std::string& archivePath) {
 void WorkThread::ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files) {
 	struct archive* a;
 	struct archive_entry* entry;
-	const std::string extractRootPrefix = m_extractRootPrefix;
+	const std::string extractRootPrefix = m_versionState.extractRootPrefix;
 	a = archive_read_new();
 	archive_read_support_format_7zip(a);
 	archive_read_support_filter_all(a);
@@ -305,7 +305,7 @@ void WorkThread::ExtractFiles(const std::string& archivePath, const std::string&
 
 					outputFile.close();
 					{
-						m_nCurrentDownloadProgress++;
+						m_downloadState.currentDownloadProgress++;
 					}
 					break;
 				}

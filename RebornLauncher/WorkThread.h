@@ -1,11 +1,9 @@
 #include "VersionConfig.h"
 #include "P2PClient.h"
-#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <vector>
 
 namespace httplib
@@ -29,6 +27,59 @@ struct tagGameInfo
 	uint64_t downloadDoneBytes{ 0 };
 	uint64_t downloadTotalBytes{ 0 };
 };
+
+struct VersionState {
+	std::map<std::string, VersionConfig> files;
+	std::vector<std::string> runtimeList;
+	std::string manifestPath;
+	std::vector<std::string> basePackageUrls;
+	std::string extractRootPrefix;
+	std::string localVersionMD5;
+};
+
+struct DownloadProgressState {
+	int totalDownload{ 0 };
+	int currentDownload{ 0 };
+	std::wstring currentFile;
+	int currentDownloadSize{ 0 };
+	int currentDownloadProgress{ 0 };
+	std::mutex mutex;
+};
+
+struct SelfUpdateState {
+	bool updateSelf{ false };
+	std::wstring modulePath;
+	std::wstring moduleDir;
+};
+
+struct RuntimeState {
+	BOOL run{ TRUE };
+	HANDLE thread{ nullptr };
+	std::vector<std::shared_ptr<tagGameInfo>> gameInfos;
+	mutable std::mutex gameInfosMutex;
+	std::vector<HANDLE> fileMappings;
+	HANDLE mappingVersion{ nullptr };
+	HWND mainWnd{ nullptr };
+};
+
+struct NetworkState {
+	std::string url;
+	std::string page;
+	std::unique_ptr<httplib::Client> client;
+	std::unique_ptr<P2PClient> p2pClient;
+	P2PSettings p2pSettings;
+	mutable std::mutex p2pMutex;
+};
+
+namespace workthread::runflow {
+	class WorkThreadRunCoordinator;
+}
+namespace workthread::runtimeupdate {
+	class WorkThreadRuntimeUpdater;
+}
+namespace workthread::versionload {
+	class WorkThreadLocalVersionLoader;
+}
 
 class WorkThread
 {
@@ -81,6 +132,14 @@ public:
 	void UpdateP2PSettings(const P2PSettings& settings);
 	P2PSettings GetP2PSettings() const;
 private:
+	bool InitializeDownloadEnvironment();
+	bool EnsureBasePackageReady();
+	void LoadLocalVersionState();
+	void RefreshRemoteManifestIfChanged();
+	bool HandleSelfUpdateAndExit();
+	bool PublishMappingsAndLaunchInitialClient();
+	void MonitorClientsUntilShutdown();
+
 	bool LaunchGameClient();
 	HWND FindGameWindowByProcessId(DWORD processId) const;
 	void UpdateGameMainWindows();
@@ -90,57 +149,17 @@ private:
 	void CleanupExitedGameInfos();
 	bool HasRunningGameProcess();
 	void TerminateAllGameProcesses();
-
-	BOOL m_bRun{ TRUE };
+	friend class workthread::runflow::WorkThreadRunCoordinator;
+	friend class workthread::runtimeupdate::WorkThreadRuntimeUpdater;
+	friend class workthread::versionload::WorkThreadLocalVersionLoader;
 
 	LPCTSTR m_szProcessName = TEXT("MapleFireReborn.exe");
 
-	int64_t m_qwVersion{ 0 };
-	std::map<std::string, VersionConfig> m_mapFiles;
-	HANDLE m_hThread{ nullptr };
-	std::vector<std::string> m_vecRunTimeList;
+	RuntimeState m_runtimeState;
+	VersionState m_versionState;
 
-	std::string m_strUrl;
-	std::string m_strPage;
-	std::string m_strVersionManifestPath;
-	std::vector<std::string> m_basePackageUrls;
-	std::string m_extractRootPrefix;
+	NetworkState m_networkState;
+	DownloadProgressState m_downloadState;
 
-	int m_nTotalDownload{ 0 };
-	int m_nCurrentDownload{ 0 };
-	std::wstring m_strCurrentDownload;
-	int m_nCurrentDownloadSize{ 0 };
-	int m_nCurrentDownloadProgress{ 0 };
-
-	std::vector<std::shared_ptr<tagGameInfo>> m_gameInfos;
-	mutable std::mutex m_gameInfosMutex;
-
-
-	std::vector<HANDLE> m_hFileMappings;
-	HANDLE m_hMappingVersion{ nullptr };
-
-	bool m_bUpdateSelf{ false };
-
-	std::wstring m_strModulePath;
-	std::wstring m_strModuleName;
-	std::wstring m_strModuleDir;
-
-	std::mutex m_mutex;
-	std::mutex m_mutexUnzip;
-
-	std::queue<DataBlock> dataQueue;
-	std::mutex queueMutex;
-	std::mutex archiveMutex;
-	std::condition_variable dataCondition;
-
-	std::string m_strLocalVersionMD5;
-	std::string m_strCurrentDir;
-
-	httplib::Client* m_client{ nullptr };
-
-	HWND m_hMainWnd{ nullptr };
-
-	std::unique_ptr<P2PClient> m_p2pClient;
-	P2PSettings m_p2pSettings;
-	mutable std::mutex m_p2pMutex;
+	SelfUpdateState m_selfUpdateState;
 };

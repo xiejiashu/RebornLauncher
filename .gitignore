@@ -37,3 +37,5 @@ x64/
 /_builds_tmp
 _deps/
 /bin/
+/bin_x86/
+/_builds_cryptoloader_x86/

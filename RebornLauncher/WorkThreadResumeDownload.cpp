@@ -109,17 +109,44 @@ bool ResumeDownloader::DownloadHttp(
 		onProgress(
 			static_cast<uint64_t>(existingFileSize),
 			static_cast<uint64_t>((std::max)(0, m_downloadState.currentDownloadSize)));
-		headers.insert({ "Range", "bytes=" + std::to_string(existingFileSize) + "-" + std::to_string(m_downloadState.currentDownloadSize) });
+		std::string rangeValue = "bytes=" + std::to_string(existingFileSize) + "-";
+		if (m_downloadState.currentDownloadSize > 0) {
+			const size_t totalSize = static_cast<size_t>(m_downloadState.currentDownloadSize);
+			if (totalSize > existingFileSize) {
+				rangeValue += std::to_string(totalSize - 1);
+			}
+		}
+		headers.insert({ "Range", rangeValue });
 	}
 
-	std::ofstream file(std::filesystem::u8path(filePath), std::ios::binary | std::ios::app);
+	std::ofstream file(std::filesystem::u8path(filePath), std::ios::binary | std::ios::in | std::ios::out);
+	if (!file.is_open()) {
+		std::ofstream createFile(std::filesystem::u8path(filePath), std::ios::binary | std::ios::out);
+		createFile.close();
+		file.open(std::filesystem::u8path(filePath), std::ios::binary | std::ios::in | std::ios::out);
+	}
 	if (!file.is_open()) {
 		return false;
 	}
 
+	std::streamoff nextWriteOffset = static_cast<std::streamoff>(existingFileSize);
+	file.seekp(nextWriteOffset, std::ios::beg);
+	if (!file) {
+		file.close();
+		return false;
+	}
+
 	res = m_networkState.client->Get(normalizedUrl.c_str(), headers, [&](const char* data, size_t dataLength) {
+		file.seekp(nextWriteOffset, std::ios::beg);
+		if (!file) {
+			return false;
+		}
 		file.write(data, static_cast<std::streamsize>(dataLength));
+		if (!file) {
+			return false;
+		}
 		file.flush();
+		nextWriteOffset += static_cast<std::streamoff>(dataLength);
 		m_downloadState.currentDownloadProgress += static_cast<int>(dataLength);
 		onProgress(
 			static_cast<uint64_t>((std::max)(0, m_downloadState.currentDownloadProgress)),

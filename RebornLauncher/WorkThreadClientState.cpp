@@ -41,8 +41,19 @@ void UpdateClientDownloadState(std::vector<std::shared_ptr<tagGameInfo>>& gameIn
 		updater(*info);
 	}
 }
-
 } // namespace
+
+HWND WorkThread::FindGameWindowByProcessId(std::vector<std::shared_ptr<tagGameInfo>>& gameInfos, DWORD processId)
+{
+	HWND hWnd = nullptr;
+	for (const auto& info : gameInfos) {
+		if (info && info->dwProcessId == processId) {
+			hWnd = info->hMainWnd;
+			break;
+		}
+	}
+	return hWnd;
+}
 
 int WorkThread::GetTotalDownload() const
 {

@@ -25,6 +25,8 @@ void WorkThread::WebServiceThread()
 		m_downloadState.totalDownload = 1;
 		m_downloadState.currentDownload = 0;
 		PostMessage(m_runtimeState.mainWnd, WM_DELETE_TRAY, 0, 0);
+		// 计时
+		DWORD dwTick = GetTickCount64();
 		std::string strPage = req.get_param_value("page");
 		const std::wstring pageW = str2wstr(strPage, static_cast<int>(strPage.length()));
 		SetCurrentDownloadFile(pageW);
@@ -69,6 +71,9 @@ void WorkThread::WebServiceThread()
 			res.status = 404;
 			res.set_content("Not Found", "text/plain");
 		}
+
+		// 下载完把游戏窗口放到最前面
+		SetForegroundWindow(FindGameWindowByProcessId(m_runtimeState.gameInfos, requestPid));
 	});
 
 	svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {

@@ -9,6 +9,7 @@
 
 #include "WorkThreadLocalVersionLoader.h"
 #include "WorkThreadNetUtils.h"
+#include "WorkThreadResumeDownload.h"
 #include "WorkThreadRuntimeUpdater.h"
 #include "WorkThreadRunCoordinator.h"
 
@@ -23,6 +24,38 @@ using workthread::netutils::TrimAscii;
 
 std::string BuildSignalEndpoint(const std::string& baseUrl, const std::string& pagePath) {
 	return baseUrl + JoinUrlPath(pagePath, "signal");
+}
+
+std::string ResolveBasePackageP2PResourcePath(const std::string& configuredPackageUrl, const std::string& absolutePackageUrl) {
+	if (!configuredPackageUrl.empty() && !IsHttpUrl(configuredPackageUrl)) {
+		return NormalizeRelativeUrlPath(configuredPackageUrl);
+	}
+
+	std::string baseUrl;
+	std::string path;
+	if (ExtractBaseAndPath(absolutePackageUrl, baseUrl, path)) {
+		return NormalizeRelativeUrlPath(path);
+	}
+	if (ExtractBaseAndPath(configuredPackageUrl, baseUrl, path)) {
+		return NormalizeRelativeUrlPath(path);
+	}
+	return {};
+}
+
+void MarkFileHidden(const std::string& path) {
+	std::error_code ec;
+	const auto fsPath = std::filesystem::u8path(path);
+	if (!std::filesystem::exists(fsPath, ec)) {
+		return;
+	}
+	const std::wstring pathW = fsPath.wstring();
+	DWORD attrs = GetFileAttributesW(pathW.c_str());
+	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		return;
+	}
+	if ((attrs & FILE_ATTRIBUTE_HIDDEN) == 0) {
+		SetFileAttributesW(pathW.c_str(), attrs | FILE_ATTRIBUTE_HIDDEN);
+	}
 }
 
 } // namespace
@@ -252,6 +285,7 @@ bool WorkThread::DownloadBasePackage()
 
 	bool downloaded = false;
 	std::string downloadedArchivePath;
+	workthread::resume::ResumeDownloader resumeDownloader(m_networkState, m_downloadState);
 	for (const auto& packageUrl : m_versionState.basePackageUrls) {
 		std::string absolutePackageUrl = packageUrl;
 		if (!IsHttpUrl(absolutePackageUrl)) {
@@ -261,10 +295,25 @@ bool WorkThread::DownloadBasePackage()
 		if (localArchivePath.empty()) {
 			localArchivePath = "base_package.7z";
 		}
+		const std::string p2pResourcePath = ResolveBasePackageP2PResourcePath(packageUrl, absolutePackageUrl);
+		bool p2pAttempted = false;
 
 		for (int attempt = 0; attempt < 2; ++attempt) {
 			m_downloadState.currentDownloadProgress = 0;
 			m_downloadState.currentDownloadSize = 0;
+
+			if (!p2pAttempted && !p2pResourcePath.empty()) {
+				p2pAttempted = true;
+				downloaded = resumeDownloader.TryP2P(
+					p2pResourcePath,
+					localArchivePath,
+					[](uint64_t, uint64_t) {});
+				if (downloaded) {
+					downloadedArchivePath = localArchivePath;
+					break;
+				}
+			}
+
 			downloaded = DownloadFileChunkedWithResume(absolutePackageUrl, localArchivePath, 2);
 			if (downloaded) {
 				downloadedArchivePath = localArchivePath;
@@ -282,7 +331,7 @@ bool WorkThread::DownloadBasePackage()
 	}
 
 	Extract7z(downloadedArchivePath, "./");
-	std::filesystem::remove(downloadedArchivePath);
+	MarkFileHidden(downloadedArchivePath);
 	return true;
 }
 

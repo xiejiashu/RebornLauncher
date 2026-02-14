@@ -74,4 +74,24 @@ add_custom_command(TARGET RebornLauncher POST_BUILD
 set_property(TARGET RebornLauncher PROPERTY
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Keep Launcher build output + run/debug working dir together.
+# This makes VS "OutDir" and Debugger Working Directory both point to
+# the RebornLauncher sub-build directory (e.g. _builds/RebornLauncher/).
+set(_REBORNLAUNCHER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+
+set_target_properties(RebornLauncher PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${_REBORNLAUNCHER_OUT_DIR}"
+)
+
+foreach(cfg Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${cfg}" cfg_u)
+    set_target_properties(RebornLauncher PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_${cfg_u} "${_REBORNLAUNCHER_OUT_DIR}"
+        LIBRARY_OUTPUT_DIRECTORY_${cfg_u} "${_REBORNLAUNCHER_OUT_DIR}"
+        ARCHIVE_OUTPUT_DIRECTORY_${cfg_u} "${_REBORNLAUNCHER_OUT_DIR}"
+        PDB_OUTPUT_DIRECTORY_${cfg_u} "${_REBORNLAUNCHER_OUT_DIR}"
+        COMPILE_PDB_OUTPUT_DIRECTORY_${cfg_u} "${_REBORNLAUNCHER_OUT_DIR}"
+    )
+endforeach()
+
 # set_target_properties(RebornLauncher PROPERTIES LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator'\"")

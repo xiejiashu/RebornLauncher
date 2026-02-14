@@ -18,7 +18,11 @@
 namespace {
 
 constexpr const char* kBootstrapHost = "https://gitee.com";
+#ifdef _DEBUG
+constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/ReadMe.txt";
+#else
 constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/RemoteEncrypt.txt";
+#endif
 
 using workthread::netutils::DirnamePath;
 using workthread::netutils::ExtractBaseAndPath;

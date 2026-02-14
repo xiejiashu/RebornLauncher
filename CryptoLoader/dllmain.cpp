@@ -16,7 +16,6 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -411,32 +410,6 @@ bool RequestDownloadFromLauncher(const std::string& page)
     return ok;
 }
 
-unsigned __stdcall DownloadRequestThreadProc(void* context)
-{
-    std::unique_ptr<std::string> page(static_cast<std::string*>(context));
-    if (page && !page->empty()) {
-        RequestDownloadFromLauncher(*page);
-    }
-    return 0;
-}
-
-void RequestDownloadFromLauncherAsync(std::string page)
-{
-    if (page.empty()) {
-        return;
-    }
-
-    std::unique_ptr<std::string> pagePtr = std::make_unique<std::string>(std::move(page));
-    const uintptr_t threadHandle = _beginthreadex(nullptr, 0, &DownloadRequestThreadProc, pagePtr.get(), 0, nullptr);
-    if (threadHandle == 0) {
-        RequestDownloadFromLauncher(*pagePtr);
-        return;
-    }
-
-    pagePtr.release();
-    CloseHandle(reinterpret_cast<HANDLE>(threadHandle));
-}
-
 bool ParseVersionMapPayload(const std::string& payload, std::map<std::string, std::string>& outMap)
 {
     std::istringstream stream(payload);
@@ -584,7 +557,8 @@ void HandleHookedFileCheck(const CHAR* lpFileName)
                 if (needDownload) {
                     const std::string page = BuildDownloadPage(inputPath, absolutePath);
                     if (ShouldRequestDownloadNow(normalizedKey)) {
-                        RequestDownloadFromLauncherAsync(page);
+                        // Must block until launcher finishes the requested download.
+                        RequestDownloadFromLauncher(page);
                     }
                 }
             }

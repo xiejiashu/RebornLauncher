@@ -95,6 +95,7 @@ public:
 	std::string DecryptVersionDat(const std::string& ciphertext);
 	bool DownloadRunTimeFile();
 
+	HWND FindGameWindowByProcessId(std::vector<std::shared_ptr<tagGameInfo>>& gameInfos, DWORD processId);
 	int GetTotalDownload() const;
 	int GetCurrentDownload() const;
 	std::wstring GetCurrentDownloadFile();

@@ -21,6 +21,22 @@ using workthread::chunkstate::ChunkStateStore;
 using workthread::netutils::ParseTotalSizeFromResponse;
 ChunkStateStore kChunkStateStore;
 
+void MarkFileHidden(const std::string& path) {
+	std::error_code ec;
+	const auto fsPath = std::filesystem::u8path(path);
+	if (!std::filesystem::exists(fsPath, ec)) {
+		return;
+	}
+	const std::wstring pathW = fsPath.wstring();
+	DWORD attrs = GetFileAttributesW(pathW.c_str());
+	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		return;
+	}
+	if ((attrs & FILE_ATTRIBUTE_HIDDEN) == 0) {
+		SetFileAttributesW(pathW.c_str(), attrs | FILE_ATTRIBUTE_HIDDEN);
+	}
+}
+
 } // namespace
 
 bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath)
@@ -93,6 +109,8 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	}
 
 	m_downloadState.currentDownloadSize = static_cast<int>(remoteTotalSize);
+	const std::string tmpPath = filePath + ".tmp";
+	const std::string statePath = filePath + ".chunks.json";
 
 	{
 		std::error_code ec;
@@ -100,13 +118,13 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 			const uint64_t localSize = std::filesystem::file_size(filePath, ec);
 			if (!ec && localSize == remoteTotalSize) {
 				m_downloadState.currentDownloadProgress = static_cast<int>(remoteTotalSize);
+				MarkFileHidden(filePath);
+				MarkFileHidden(statePath);
 				return true;
 			}
 		}
 	}
 
-	const std::string tmpPath = filePath + ".tmp";
-	const std::string statePath = filePath + ".chunks.json";
 	const uint64_t chunkSize = 8ULL * 1024ULL * 1024ULL;
 	threadCount = (std::max<size_t>)(1, threadCount);
 
@@ -174,7 +192,8 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	if (ec) {
 		return false;
 	}
-	std::filesystem::remove(statePath, ec);
+	MarkFileHidden(filePath);
+	MarkFileHidden(statePath);
 	m_downloadState.currentDownloadProgress = static_cast<int>(remoteTotalSize);
 	return true;
 }

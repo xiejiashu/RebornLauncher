@@ -17,6 +17,7 @@ private:
     void OnBrowseJsonFile();
     void OnEncryptJsonPayload();
     void OnDecryptJsonPayload();
+    void OnOpenDiffPackDialog();
     void OnGenerate();
     void RunWorker(std::wstring root, std::wstring key, bool encrypt);
     void LoadCachedSettings();

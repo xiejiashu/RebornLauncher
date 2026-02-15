@@ -2,6 +2,8 @@
 #include "UpdateForge.h"
 #include "FileHash.h"
 
+#include <archive.h>
+#include <archive_entry.h>
 #include <json/json.h>
 #include <zstd.h>
 
@@ -15,6 +17,8 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <set>
 #include <map>
 #include <sstream>
@@ -36,6 +40,16 @@ constexpr INT_PTR IDC_BTN_GENERATE = 1003;
 constexpr INT_PTR IDC_BTN_JSON_BROWSE = 1004;
 constexpr INT_PTR IDC_BTN_JSON_ENCRYPT = 1005;
 constexpr INT_PTR IDC_BTN_JSON_DECRYPT = 1006;
+constexpr UINT IDM_TOOLS_DIFF_PACK = 20001;
+
+constexpr INT_PTR IDC_DIFF_BASE_EDIT = 3001;
+constexpr INT_PTR IDC_DIFF_BASE_BROWSE = 3002;
+constexpr INT_PTR IDC_DIFF_NEW_EDIT = 3003;
+constexpr INT_PTR IDC_DIFF_NEW_BROWSE = 3004;
+constexpr INT_PTR IDC_DIFF_ARCHIVE_EDIT = 3005;
+constexpr INT_PTR IDC_DIFF_ARCHIVE_BROWSE = 3006;
+constexpr INT_PTR IDC_DIFF_RUN = 3007;
+constexpr INT_PTR IDC_DIFF_STATUS = 3008;
 
 constexpr char kBootstrapCryptoKey[] = "cDds!ErF9sIe6u$B";
 constexpr char kVersionDatZstdDict[] = "D2Qbzy7hnmLh1zqgmDKx";
@@ -59,6 +73,27 @@ struct FileResult
     int64_t version;
     int64_t size;
     std::string md5;
+};
+
+struct DiffPackDialogResult
+{
+    bool ran{};
+    bool success{};
+    std::wstring message;
+};
+
+struct DiffPackDialogState
+{
+    HINSTANCE hInst{};
+    HWND owner{};
+    HWND hwnd{};
+    HWND editBase{};
+    HWND editNew{};
+    HWND editArchive{};
+    HWND status{};
+    HWND btnRun{};
+    bool running{};
+    DiffPackDialogResult result{};
 };
 
 static std::string NarrowACP(const std::wstring& w)
@@ -365,6 +400,47 @@ static std::wstring PickJsonFile(HWND owner)
     return result;
 }
 
+static std::wstring PickSaveArchivePath(HWND owner)
+{
+    std::wstring result;
+    IFileSaveDialog* dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
+    {
+        DWORD opts = 0;
+        if (SUCCEEDED(dialog->GetOptions(&opts)))
+        {
+            dialog->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT);
+        }
+
+        COMDLG_FILTERSPEC specs[] = {
+            { L"7z archive (*.7z)", L"*.7z" },
+            { L"All files (*.*)", L"*.*" }
+        };
+        dialog->SetFileTypes(static_cast<UINT>(std::size(specs)), specs);
+        dialog->SetFileTypeIndex(1);
+        dialog->SetDefaultExtension(L"7z");
+        dialog->SetFileName(L"changed_files.7z");
+        dialog->SetTitle(L"Choose output archive");
+
+        if (SUCCEEDED(dialog->Show(owner)))
+        {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)))
+            {
+                PWSTR psz = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &psz)))
+                {
+                    result = psz;
+                    CoTaskMemFree(psz);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    return result;
+}
+
 static bool ReadTextFileUtf8(const std::wstring& path, std::string& textOut, std::wstring& errorOut)
 {
     std::ifstream ifs(fs::path(path), std::ios::binary);
@@ -439,6 +515,634 @@ static std::string CompressVersionDatZstd(const std::string& plain)
     return compressed;
 }
 
+static std::wstring ArchiveErrorToWide(struct archive* writer)
+{
+    if (!writer)
+    {
+        return L"Archive writer is null.";
+    }
+
+    const char* text = archive_error_string(writer);
+    if (text == nullptr || text[0] == '\0')
+    {
+        return L"Unknown archive error.";
+    }
+    return Utf8ToWide(text);
+}
+
+static time_t FileTimeToTimeT(fs::file_time_type value)
+{
+    using namespace std::chrono;
+    const auto systemTime = time_point_cast<system_clock::duration>(
+        value - fs::file_time_type::clock::now() + system_clock::now());
+    return system_clock::to_time_t(systemTime);
+}
+
+static bool AreFilesBinaryEqual(const fs::path& left, const fs::path& right, bool& sameOut, std::wstring& errorOut)
+{
+    sameOut = false;
+
+    std::ifstream leftFile(left, std::ios::binary);
+    if (!leftFile)
+    {
+        errorOut = L"Failed to open file: " + left.wstring();
+        return false;
+    }
+    std::ifstream rightFile(right, std::ios::binary);
+    if (!rightFile)
+    {
+        errorOut = L"Failed to open file: " + right.wstring();
+        return false;
+    }
+
+    std::array<char, 64 * 1024> leftBuffer{};
+    std::array<char, 64 * 1024> rightBuffer{};
+
+    while (true)
+    {
+        leftFile.read(leftBuffer.data(), static_cast<std::streamsize>(leftBuffer.size()));
+        rightFile.read(rightBuffer.data(), static_cast<std::streamsize>(rightBuffer.size()));
+        const std::streamsize leftRead = leftFile.gcount();
+        const std::streamsize rightRead = rightFile.gcount();
+
+        if (leftRead != rightRead)
+        {
+            sameOut = false;
+            return true;
+        }
+        if (leftRead == 0)
+        {
+            sameOut = true;
+            return true;
+        }
+        if (memcmp(leftBuffer.data(), rightBuffer.data(), static_cast<size_t>(leftRead)) != 0)
+        {
+            sameOut = false;
+            return true;
+        }
+    }
+}
+
+static bool CollectChangedFiles(
+    const fs::path& baseFolder,
+    const fs::path& newFolder,
+    std::vector<fs::path>& changedRelativeFilesOut,
+    std::wstring& errorOut)
+{
+    changedRelativeFilesOut.clear();
+    std::error_code iterEc;
+    fs::recursive_directory_iterator it(newFolder, iterEc);
+    if (iterEc)
+    {
+        errorOut = L"Failed to enumerate new folder: " + newFolder.wstring();
+        return false;
+    }
+
+    const fs::recursive_directory_iterator end;
+    for (; it != end; ++it)
+    {
+        if (it->is_directory(iterEc))
+        {
+            if (iterEc)
+            {
+                errorOut = L"Failed to access directory entry: " + it->path().wstring();
+                return false;
+            }
+            continue;
+        }
+        if (!it->is_regular_file(iterEc))
+        {
+            if (iterEc)
+            {
+                errorOut = L"Failed to access file entry: " + it->path().wstring();
+                return false;
+            }
+            continue;
+        }
+
+        const fs::path newFile = it->path();
+        const fs::path relPath = fs::relative(newFile, newFolder, iterEc);
+        if (iterEc || relPath.empty())
+        {
+            errorOut = L"Failed to resolve relative path for file: " + newFile.wstring();
+            return false;
+        }
+
+        const fs::path baseFile = baseFolder / relPath;
+        std::error_code baseEc;
+        if (!fs::exists(baseFile, baseEc) || !fs::is_regular_file(baseFile, baseEc))
+        {
+            changedRelativeFilesOut.push_back(relPath);
+            continue;
+        }
+
+        std::error_code sizeEc;
+        const auto newSize = fs::file_size(newFile, sizeEc);
+        if (sizeEc)
+        {
+            errorOut = L"Failed to read file size: " + newFile.wstring();
+            return false;
+        }
+        const auto baseSize = fs::file_size(baseFile, sizeEc);
+        if (sizeEc)
+        {
+            errorOut = L"Failed to read file size: " + baseFile.wstring();
+            return false;
+        }
+
+        if (newSize != baseSize)
+        {
+            changedRelativeFilesOut.push_back(relPath);
+            continue;
+        }
+
+        bool same = false;
+        if (!AreFilesBinaryEqual(baseFile, newFile, same, errorOut))
+        {
+            return false;
+        }
+        if (!same)
+        {
+            changedRelativeFilesOut.push_back(relPath);
+        }
+    }
+
+    return true;
+}
+
+static bool CreateChangedFilesArchive7z(
+    const fs::path& newFolder,
+    const std::vector<fs::path>& changedRelativeFiles,
+    const fs::path& archivePath,
+    std::wstring& errorOut)
+{
+    std::error_code dirEc;
+    const fs::path parent = archivePath.parent_path();
+    if (!parent.empty() && !fs::exists(parent, dirEc))
+    {
+        fs::create_directories(parent, dirEc);
+        if (dirEc)
+        {
+            errorOut = L"Failed to create output directory: " + parent.wstring();
+            return false;
+        }
+    }
+
+    struct archive* writer = archive_write_new();
+    if (!writer)
+    {
+        errorOut = L"Failed to create archive writer.";
+        return false;
+    }
+
+    auto cleanup = [&]() {
+        archive_write_close(writer);
+        archive_write_free(writer);
+    };
+
+    int code = archive_write_set_format_7zip(writer);
+    if (code != ARCHIVE_OK)
+    {
+        errorOut = L"Failed to configure 7z format: " + ArchiveErrorToWide(writer);
+        cleanup();
+        return false;
+    }
+
+    code = archive_write_set_options(writer, "compression=lzma2");
+    if (code != ARCHIVE_OK && code != ARCHIVE_WARN)
+    {
+        errorOut = L"Failed to configure 7z compression: " + ArchiveErrorToWide(writer);
+        cleanup();
+        return false;
+    }
+
+    code = archive_write_open_filename_w(writer, archivePath.c_str());
+    if (code != ARCHIVE_OK)
+    {
+        errorOut = L"Failed to open output archive: " + ArchiveErrorToWide(writer);
+        cleanup();
+        return false;
+    }
+
+    std::array<char, 128 * 1024> buffer{};
+    for (const fs::path& relPath : changedRelativeFiles)
+    {
+        const fs::path sourcePath = newFolder / relPath;
+        std::error_code sizeEc;
+        const auto fileSize = fs::file_size(sourcePath, sizeEc);
+        if (sizeEc)
+        {
+            errorOut = L"Failed to read file size before packing: " + sourcePath.wstring();
+            cleanup();
+            return false;
+        }
+
+        struct archive_entry* entry = archive_entry_new();
+        if (!entry)
+        {
+            errorOut = L"Failed to allocate archive entry.";
+            cleanup();
+            return false;
+        }
+
+        const std::wstring relArchivePath = relPath.generic_wstring();
+        archive_entry_copy_pathname_w(entry, relArchivePath.c_str());
+        archive_entry_set_filetype(entry, AE_IFREG);
+        archive_entry_set_perm(entry, 0644);
+        archive_entry_set_size(entry, static_cast<la_int64_t>(fileSize));
+        std::error_code timeEc;
+        const auto modified = fs::last_write_time(sourcePath, timeEc);
+        if (!timeEc)
+        {
+            archive_entry_set_mtime(entry, static_cast<la_int64_t>(FileTimeToTimeT(modified)), 0);
+        }
+
+        code = archive_write_header(writer, entry);
+        if (code != ARCHIVE_OK && code != ARCHIVE_WARN)
+        {
+            archive_entry_free(entry);
+            errorOut = L"Failed to write archive header for: " + sourcePath.wstring() + L" (" + ArchiveErrorToWide(writer) + L")";
+            cleanup();
+            return false;
+        }
+
+        std::ifstream ifs(sourcePath, std::ios::binary);
+        if (!ifs)
+        {
+            archive_entry_free(entry);
+            errorOut = L"Failed to open file for packing: " + sourcePath.wstring();
+            cleanup();
+            return false;
+        }
+
+        while (ifs)
+        {
+            ifs.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const std::streamsize readBytes = ifs.gcount();
+            if (readBytes <= 0)
+            {
+                break;
+            }
+
+            const la_ssize_t written = archive_write_data(writer, buffer.data(), static_cast<size_t>(readBytes));
+            if (written < 0 || written != readBytes)
+            {
+                archive_entry_free(entry);
+                errorOut = L"Failed to write data to archive for: " + sourcePath.wstring() + L" (" + ArchiveErrorToWide(writer) + L")";
+                cleanup();
+                return false;
+            }
+        }
+
+        archive_entry_free(entry);
+    }
+
+    cleanup();
+    return true;
+}
+
+static void DiffDialogSetStatus(DiffPackDialogState* state, const std::wstring& text)
+{
+    if (state != nullptr && state->status != nullptr)
+    {
+        SetWindowTextW(state->status, text.c_str());
+    }
+}
+
+static void DiffDialogSetRunning(DiffPackDialogState* state, bool running)
+{
+    if (!state || !state->hwnd)
+    {
+        return;
+    }
+    state->running = running;
+    EnableWindow(GetDlgItem(state->hwnd, IDC_DIFF_BASE_BROWSE), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(state->hwnd, IDC_DIFF_NEW_BROWSE), running ? FALSE : TRUE);
+    EnableWindow(GetDlgItem(state->hwnd, IDC_DIFF_ARCHIVE_BROWSE), running ? FALSE : TRUE);
+    EnableWindow(state->editBase, running ? FALSE : TRUE);
+    EnableWindow(state->editNew, running ? FALSE : TRUE);
+    EnableWindow(state->editArchive, running ? FALSE : TRUE);
+    EnableWindow(state->btnRun, running ? FALSE : TRUE);
+}
+
+static bool IsDirectoryPathValid(const std::wstring& path)
+{
+    if (path.empty())
+    {
+        return false;
+    }
+    std::error_code ec;
+    return fs::exists(path, ec) && fs::is_directory(path, ec);
+}
+
+static void DiffDialogRunPack(DiffPackDialogState* state)
+{
+    if (!state || state->running)
+    {
+        return;
+    }
+
+    std::wstring baseFolder = GetControlText(state->editBase);
+    std::wstring newFolder = GetControlText(state->editNew);
+    std::wstring archivePath = GetControlText(state->editArchive);
+
+    if (!IsDirectoryPathValid(baseFolder))
+    {
+        MessageBoxW(state->hwnd, L"Base folder is invalid.", L"Compare and Pack", MB_ICONWARNING | MB_OK);
+        return;
+    }
+    if (!IsDirectoryPathValid(newFolder))
+    {
+        MessageBoxW(state->hwnd, L"New folder is invalid.", L"Compare and Pack", MB_ICONWARNING | MB_OK);
+        return;
+    }
+    if (archivePath.empty())
+    {
+        MessageBoxW(state->hwnd, L"Please select output archive path.", L"Compare and Pack", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    fs::path archiveFsPath = archivePath;
+    if (!archiveFsPath.has_extension())
+    {
+        archiveFsPath += L".7z";
+        archivePath = archiveFsPath.wstring();
+        SetWindowTextW(state->editArchive, archivePath.c_str());
+    }
+
+    DiffDialogSetRunning(state, true);
+    DiffDialogSetStatus(state, L"Comparing files...");
+    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+
+    std::vector<fs::path> changedFiles;
+    std::wstring error;
+    if (!CollectChangedFiles(baseFolder, newFolder, changedFiles, error))
+    {
+        state->result.ran = true;
+        state->result.success = false;
+        state->result.message = L"Compare failed: " + error;
+        DiffDialogSetStatus(state, state->result.message);
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        DiffDialogSetRunning(state, false);
+        return;
+    }
+
+    if (changedFiles.empty())
+    {
+        state->result.ran = true;
+        state->result.success = true;
+        state->result.message = L"No changed files were found.";
+        DiffDialogSetStatus(state, state->result.message);
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        DiffDialogSetRunning(state, false);
+        return;
+    }
+
+    DiffDialogSetStatus(state, L"Packing changed files...");
+    if (!CreateChangedFilesArchive7z(newFolder, changedFiles, archiveFsPath, error))
+    {
+        state->result.ran = true;
+        state->result.success = false;
+        state->result.message = L"Pack failed: " + error;
+        DiffDialogSetStatus(state, state->result.message);
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        DiffDialogSetRunning(state, false);
+        return;
+    }
+
+    state->result.ran = true;
+    state->result.success = true;
+    state->result.message = L"Packed " + std::to_wstring(changedFiles.size()) + L" changed files to: " + archiveFsPath.wstring();
+    DiffDialogSetStatus(state, state->result.message);
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    DiffDialogSetRunning(state, false);
+}
+
+static void DiffDialogInitControls(DiffPackDialogState* state)
+{
+    if (!state || !state->hwnd)
+    {
+        return;
+    }
+
+    HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    const int margin = 16;
+    const int labelWidth = 90;
+    const int buttonWidth = 90;
+    const int spacing = 8;
+    const int rowHeight = 24;
+    RECT rcClient{};
+    GetClientRect(state->hwnd, &rcClient);
+    const int clientWidth = static_cast<int>(rcClient.right - rcClient.left);
+    const int dialogWidth = (std::max)(620, clientWidth);
+    const int editLeft = margin + labelWidth + 6;
+    const int editWidth = dialogWidth - margin - editLeft - spacing - buttonWidth;
+
+    int y = 18;
+    CreateWindowExW(0, L"STATIC", L"Base Folder:", WS_CHILD | WS_VISIBLE,
+        margin, y + 3, labelWidth, 20, state->hwnd, nullptr, state->hInst, nullptr);
+    state->editBase = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        editLeft, y, editWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_BASE_EDIT), state->hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        editLeft + editWidth + spacing, y, buttonWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_BASE_BROWSE), state->hInst, nullptr);
+
+    y += 34;
+    CreateWindowExW(0, L"STATIC", L"New Folder:", WS_CHILD | WS_VISIBLE,
+        margin, y + 3, labelWidth, 20, state->hwnd, nullptr, state->hInst, nullptr);
+    state->editNew = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        editLeft, y, editWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_NEW_EDIT), state->hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        editLeft + editWidth + spacing, y, buttonWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_NEW_BROWSE), state->hInst, nullptr);
+
+    y += 34;
+    CreateWindowExW(0, L"STATIC", L"Output 7z:", WS_CHILD | WS_VISIBLE,
+        margin, y + 3, labelWidth, 20, state->hwnd, nullptr, state->hInst, nullptr);
+    state->editArchive = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        editLeft, y, editWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_ARCHIVE_EDIT), state->hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Browse", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        editLeft + editWidth + spacing, y, buttonWidth, rowHeight, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_ARCHIVE_BROWSE), state->hInst, nullptr);
+
+    y += 40;
+    state->status = CreateWindowExW(0, L"STATIC", L"Select folders, then run compare and pack.",
+        WS_CHILD | WS_VISIBLE, margin, y, dialogWidth - margin * 2, 22, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_STATUS), state->hInst, nullptr);
+
+    y += 32;
+    state->btnRun = CreateWindowExW(0, L"BUTTON", L"Compare && Pack", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        dialogWidth - margin - 230, y, 110, 28, state->hwnd, reinterpret_cast<HMENU>(IDC_DIFF_RUN), state->hInst, nullptr);
+    CreateWindowExW(0, L"BUTTON", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        dialogWidth - margin - 110, y, 110, 28, state->hwnd, reinterpret_cast<HMENU>(IDCANCEL), state->hInst, nullptr);
+
+    HWND children[] = {
+        state->editBase, state->editNew, state->editArchive, state->status, state->btnRun,
+        GetDlgItem(state->hwnd, IDC_DIFF_BASE_BROWSE), GetDlgItem(state->hwnd, IDC_DIFF_NEW_BROWSE),
+        GetDlgItem(state->hwnd, IDC_DIFF_ARCHIVE_BROWSE), GetDlgItem(state->hwnd, IDCANCEL)
+    };
+    for (HWND child : children)
+    {
+        if (child)
+        {
+            SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
+        }
+    }
+}
+
+static LRESULT CALLBACK DiffPackDialogWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    DiffPackDialogState* state = reinterpret_cast<DiffPackDialogState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE)
+    {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = static_cast<DiffPackDialogState*>(cs->lpCreateParams);
+        if (state)
+        {
+            state->hwnd = hwnd;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        }
+    }
+
+    if (!state)
+    {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    switch (msg)
+    {
+    case WM_CREATE:
+        DiffDialogInitControls(state);
+        return 0;
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDC_DIFF_BASE_BROWSE:
+        {
+            const std::wstring selected = PickFolder(hwnd);
+            if (!selected.empty())
+            {
+                SetWindowTextW(state->editBase, selected.c_str());
+            }
+            return 0;
+        }
+        case IDC_DIFF_NEW_BROWSE:
+        {
+            const std::wstring selected = PickFolder(hwnd);
+            if (!selected.empty())
+            {
+                SetWindowTextW(state->editNew, selected.c_str());
+            }
+            return 0;
+        }
+        case IDC_DIFF_ARCHIVE_BROWSE:
+        {
+            const std::wstring selected = PickSaveArchivePath(hwnd);
+            if (!selected.empty())
+            {
+                SetWindowTextW(state->editArchive, selected.c_str());
+            }
+            return 0;
+        }
+        case IDC_DIFF_RUN:
+            DiffDialogRunPack(state);
+            return 0;
+        case IDCANCEL:
+            DestroyWindow(hwnd);
+            return 0;
+        default:
+            break;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        return 0;
+    default:
+        break;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static DiffPackDialogResult ShowDiffPackDialogModal(HINSTANCE hInst, HWND owner)
+{
+    static const wchar_t* kClassName = L"UpdateForgeDiffPackDialog";
+    static bool registered = false;
+    if (!registered)
+    {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = DiffPackDialogWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = kClassName;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    DiffPackDialogState state{};
+    state.hInst = hInst;
+    state.owner = owner;
+
+    constexpr int dialogWidth = 680;
+    constexpr int dialogHeight = 230;
+    HWND hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        kClassName,
+        L"Compare Folder And Pack Changes",
+        WS_CAPTION | WS_SYSMENU | WS_POPUP,
+        CW_USEDEFAULT, CW_USEDEFAULT, dialogWidth, dialogHeight,
+        owner, nullptr, hInst, &state);
+    if (!hwnd)
+    {
+        state.result.ran = true;
+        state.result.success = false;
+        state.result.message = L"Failed to create compare dialog.";
+        return state.result;
+    }
+
+    if (owner && IsWindow(owner))
+    {
+        EnableWindow(owner, FALSE);
+    }
+
+    RECT ownerRect{};
+    if (owner && GetWindowRect(owner, &ownerRect))
+    {
+        const int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - dialogWidth) / 2;
+        const int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - dialogHeight) / 2;
+        SetWindowPos(hwnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+    else
+    {
+        ShowWindow(hwnd, SW_SHOW);
+    }
+    UpdateWindow(hwnd);
+
+    MSG msg{};
+    while (IsWindow(hwnd))
+    {
+        const BOOL gm = GetMessageW(&msg, nullptr, 0, 0);
+        if (gm <= 0)
+        {
+            break;
+        }
+        if (!IsDialogMessageW(hwnd, &msg))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    if (owner && IsWindow(owner))
+    {
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+
+    return state.result;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
     _In_ LPWSTR lpCmdLine,
@@ -499,6 +1203,15 @@ void UpdateForgeApp::InitWindow(int nCmdShow)
 
     m_hWnd = CreateWindowExW(0, CLASS_NAME, L"UpdateForge Version Builder", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, winWidth, winHeight, nullptr, nullptr, m_hInst, this);
+
+    HMENU hMenuBar = CreateMenu();
+    HMENU hToolsMenu = CreatePopupMenu();
+    if (hMenuBar && hToolsMenu)
+    {
+        AppendMenuW(hToolsMenu, MF_STRING, IDM_TOOLS_DIFF_PACK, L"Compare And Pack...");
+        AppendMenuW(hMenuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(hToolsMenu), L"Tools");
+        SetMenu(m_hWnd, hMenuBar);
+    }
 
     CreateControls();
 
@@ -800,6 +1513,27 @@ void UpdateForgeApp::OnDecryptJsonPayload()
     SetWindowTextW(m_editUrlOutput, Utf8ToWide(plain).c_str());
     AppendLogAsync(L"Payload decrypted. JSON is shown in Payload box.");
 }
+
+void UpdateForgeApp::OnOpenDiffPackDialog()
+{
+    if (m_hWorker || m_isBusy)
+    {
+        AppendLogAsync(L"A task is already running. Please wait.");
+        return;
+    }
+
+    const DiffPackDialogResult result = ShowDiffPackDialogModal(m_hInst, m_hWnd);
+    if (!result.ran)
+    {
+        return;
+    }
+
+    if (!result.message.empty())
+    {
+        AppendLogAsync(result.message);
+    }
+}
+
 void UpdateForgeApp::OnGenerate()
 {
     if (m_hWorker)
@@ -865,7 +1599,7 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
                 continue;
             std::wstring ext = fs::path(page).extension().wstring();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-            if (ext == L".exe" || ext == L".dll" || ext == L".wz" || ext == L".ini" || ext == L".acm")
+            if (ext == L".exe" || ext == L".dll" || ext == L".wz" || ext == L".ini" || ext == L".acm" || ext == L".manifest")
             {
                 runtimeCandidates.insert(page);
             }
@@ -1115,6 +1849,9 @@ LRESULT CALLBACK UpdateForgeApp::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
+        case IDM_TOOLS_DIFF_PACK:
+            self->OnOpenDiffPackDialog();
+            break;
         case IDC_BTN_BROWSE:
             self->OnBrowse();
             break;

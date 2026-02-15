@@ -164,30 +164,6 @@ IDB_PIG6                PNG                     "Texture\\PiaoPiaoPig\\06.png"
 
 IDB_PIG7                PNG                     "Texture\\PiaoPiaoPig\\07.png"
 
-IDB_UI1                 PNG                     "Texture\\UI\\Background.png"
-
-IDB_LSL_JUMP0           PNG                     "Texture\\GreenWaterSpirit\\jump.0.png"
-
-IDB_LSL_MOVE0           PNG                     "Texture\\GreenWaterSpirit\\move.0.png"
-
-IDB_LSL_MOVE1           PNG                     "Texture\\GreenWaterSpirit\\move.1.png"
-
-IDB_LSL_MOVE2           PNG                     "Texture\\GreenWaterSpirit\\move.2.png"
-
-IDB_LSL_MOVE3           PNG                     "Texture\\GreenWaterSpirit\\move.3.png"
-
-IDB_LSL_MOVE4           PNG                     "Texture\\GreenWaterSpirit\\move.4.png"
-
-IDB_LSL_MOVE5           PNG                     "Texture\\GreenWaterSpirit\\move.5.png"
-
-IDB_LSL_MOVE6           PNG                     "Texture\\GreenWaterSpirit\\move.6.png"
-
-IDB_LSL_STAND0          PNG                     "Texture\\GreenWaterSpirit\\stand.0.png"
-
-IDB_LSL_STAND1          PNG                     "Texture\\GreenWaterSpirit\\stand.1.png"
-
-IDB_LSL_STAND2          PNG                     "Texture\\GreenWaterSpirit\\stand.2.png"
-
 
 /////////////////////////////////////////////////////////////////////////////
 //

@@ -11,10 +11,14 @@
 #include <Psapi.h>
 #include <objbase.h>
 #include <objidl.h>
+#include <algorithm>
+#include <array>
+#include <cwctype>
 #include <filesystem>
 #include <iostream>
 #include <process.h>
 #include <string>
+#include <vector>
 #include <shellapi.h>
 #include <gdiplus.h>
 
@@ -40,6 +44,8 @@ WCHAR szWindowClass[MAX_LOADSTRING];
 ATOM MyRegisterClass(HINSTANCE hInstance);
 BOOL InitInstance(HINSTANCE, int);
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+bool IsProcessRunning(DWORD dwProcessId);
+void CreateDesktopLauncherShortcut(const std::filesystem::path& targetDir, const std::wstring& fileName);
 
 HWND g_hWnd = NULL;
 HINSTANCE g_hInstance = NULL;
@@ -66,6 +72,370 @@ TrayIconManager g_trayIconManager(g_bRendering);
 
 HANDLE g_hSingleInstanceMutex = NULL;
 constexpr const wchar_t* kLauncherSingleInstanceMutexName = L"Local\\MapleFireReborn.RebornLauncher.SingleInstance";
+constexpr const wchar_t* kLauncherConfigSection = L"MapleFireReborn";
+constexpr const wchar_t* kLauncherConfigKeyGamePath = L"GamePath";
+constexpr const wchar_t* kCanonicalLauncherName = L"RebornLauncher.exe";
+constexpr ULONGLONG kMinInstallFreeBytes = 5ULL * 1024ULL * 1024ULL * 1024ULL;
+
+namespace {
+
+struct RelaunchArgs {
+    DWORD cleanupPid{ 0 };
+    std::wstring cleanupPath;
+    std::wstring stage;
+};
+
+std::wstring QuoteCommandArg(const std::wstring& value) {
+    return L"\"" + value + L"\"";
+}
+
+std::wstring NormalizePathForCompare(const std::filesystem::path& input) {
+    std::error_code ec;
+    std::filesystem::path normalized = std::filesystem::weakly_canonical(input, ec);
+    if (ec) {
+        normalized = input.lexically_normal();
+    }
+    std::wstring value = normalized.wstring();
+    while (!value.empty() && (value.back() == L'\\' || value.back() == L'/')) {
+        value.pop_back();
+    }
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(towlower(ch));
+    });
+    return value;
+}
+
+bool PathsEqual(const std::filesystem::path& left, const std::filesystem::path& right) {
+    return NormalizePathForCompare(left) == NormalizePathForCompare(right);
+}
+
+std::wstring GetLauncherConfigPath() {
+    static std::wstring path;
+    if (!path.empty()) {
+        return path;
+    }
+
+    wchar_t localAppData[MAX_PATH]{};
+    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localAppData))) {
+        std::filesystem::path configDir = std::filesystem::path(localAppData) / L"MapleFireReborn";
+        std::error_code ec;
+        std::filesystem::create_directories(configDir, ec);
+        path = (configDir / L"launcher.ini").wstring();
+        return path;
+    }
+
+    path = (std::filesystem::path(g_strCurrentModulePath).parent_path() / L"launcher.ini").wstring();
+    return path;
+}
+
+std::wstring ReadLauncherConfigString(const wchar_t* key, const wchar_t* defaultValue = L"") {
+    wchar_t buf[MAX_PATH]{};
+    const std::wstring configPath = GetLauncherConfigPath();
+    GetPrivateProfileStringW(kLauncherConfigSection, key, defaultValue, buf, MAX_PATH, configPath.c_str());
+    return buf;
+}
+
+void WriteLauncherConfigString(const wchar_t* key, const std::wstring& value) {
+    const std::wstring configPath = GetLauncherConfigPath();
+    WritePrivateProfileStringW(kLauncherConfigSection, key, value.c_str(), configPath.c_str());
+}
+
+bool StartsWith(const std::wstring& value, const wchar_t* prefix) {
+    if (!prefix) {
+        return false;
+    }
+    const size_t prefixLen = wcslen(prefix);
+    return value.size() >= prefixLen && value.compare(0, prefixLen, prefix) == 0;
+}
+
+bool TryParseDword(const std::wstring& value, DWORD& outValue) {
+    if (value.empty()) {
+        return false;
+    }
+    wchar_t* end = nullptr;
+    unsigned long parsed = wcstoul(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != L'\0') {
+        return false;
+    }
+    outValue = static_cast<DWORD>(parsed);
+    return true;
+}
+
+RelaunchArgs ParseRelaunchArgsFromCommandLine() {
+    RelaunchArgs args;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) {
+        return args;
+    }
+
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring token = argv[i] ? argv[i] : L"";
+        if (StartsWith(token, L"--cleanup-pid=")) {
+            DWORD pid = 0;
+            if (TryParseDword(token.substr(wcslen(L"--cleanup-pid=")), pid)) {
+                args.cleanupPid = pid;
+            }
+            continue;
+        }
+        if (StartsWith(token, L"--cleanup-path=")) {
+            args.cleanupPath = token.substr(wcslen(L"--cleanup-path="));
+            continue;
+        }
+        if (StartsWith(token, L"--stage=")) {
+            args.stage = token.substr(wcslen(L"--stage="));
+            continue;
+        }
+    }
+
+    // Backward compatibility: old chain passed a single positional cleanup path.
+    if (argc == 2 && argv[1] && !StartsWith(argv[1], L"--")) {
+        args.cleanupPath = argv[1];
+    }
+
+    LocalFree(argv);
+    return args;
+}
+
+std::wstring BuildRelaunchArgsString(const RelaunchArgs& args) {
+    std::wstring result;
+    if (args.cleanupPid != 0) {
+        result += L"--cleanup-pid=" + std::to_wstring(args.cleanupPid);
+    }
+    if (!args.cleanupPath.empty()) {
+        if (!result.empty()) {
+            result += L" ";
+        }
+        result += L"--cleanup-path=" + QuoteCommandArg(args.cleanupPath);
+    }
+    if (!args.stage.empty()) {
+        if (!result.empty()) {
+            result += L" ";
+        }
+        result += L"--stage=" + args.stage;
+    }
+    return result;
+}
+
+bool EnsureDirectoryExists(const std::filesystem::path& dirPath) {
+    if (dirPath.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    if (std::filesystem::exists(dirPath, ec)) {
+        return std::filesystem::is_directory(dirPath, ec);
+    }
+    return std::filesystem::create_directories(dirPath, ec);
+}
+
+bool HasEnoughFreeSpace(const std::filesystem::path& dirPath, ULONGLONG requiredFreeBytes) {
+    const std::filesystem::path root = dirPath.root_path();
+    if (root.empty()) {
+        return false;
+    }
+    ULARGE_INTEGER freeBytesAvailable{};
+    if (!GetDiskFreeSpaceExW(root.c_str(), &freeBytesAvailable, nullptr, nullptr)) {
+        return false;
+    }
+    return freeBytesAvailable.QuadPart >= requiredFreeBytes;
+}
+
+bool DeleteFileWithRetry(const std::filesystem::path& filePath, int maxRetry = 25, DWORD delayMs = 80) {
+    if (filePath.empty()) {
+        return true;
+    }
+    for (int i = 0; i < maxRetry; ++i) {
+        SetFileAttributesW(filePath.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (DeleteFileW(filePath.c_str())) {
+            return true;
+        }
+        const DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        Sleep(delayMs);
+    }
+    return false;
+}
+
+bool CopySelfToTarget(const std::filesystem::path& targetPath) {
+    if (targetPath.empty()) {
+        return false;
+    }
+    const std::filesystem::path targetDir = targetPath.parent_path();
+    if (!EnsureDirectoryExists(targetDir)) {
+        return false;
+    }
+    DeleteFileWithRetry(targetPath);
+    return CopyFileW(g_strCurrentModulePath.c_str(), targetPath.c_str(), FALSE) == TRUE;
+}
+
+bool LaunchProcess(const std::filesystem::path& exePath, const RelaunchArgs& relaunchArgs, const std::filesystem::path& workDir) {
+    const std::wstring args = BuildRelaunchArgsString(relaunchArgs);
+    HINSTANCE result = ShellExecuteW(
+        nullptr,
+        L"open",
+        exePath.c_str(),
+        args.empty() ? nullptr : args.c_str(),
+        workDir.c_str(),
+        SW_SHOWNORMAL);
+    return reinterpret_cast<INT_PTR>(result) > 32;
+}
+
+bool IsInManagedInstallDir() {
+    const std::filesystem::path currentDir = std::filesystem::path(g_strCurrentModulePath).parent_path();
+    const std::wstring configuredPath = ReadLauncherConfigString(kLauncherConfigKeyGamePath);
+    if (!configuredPath.empty() && PathsEqual(currentDir, std::filesystem::path(configuredPath))) {
+        return true;
+    }
+    if (_wcsicmp(currentDir.filename().c_str(), L"MapleFireReborn") == 0) {
+        WriteLauncherConfigString(kLauncherConfigKeyGamePath, currentDir.wstring());
+        return true;
+    }
+    return false;
+}
+
+std::filesystem::path ResolveInstallDirectory() {
+    const std::wstring configuredPath = ReadLauncherConfigString(kLauncherConfigKeyGamePath);
+    if (!configuredPath.empty()) {
+        const std::filesystem::path configuredDir(configuredPath);
+        if (EnsureDirectoryExists(configuredDir)) {
+            return configuredDir;
+        }
+    }
+
+    constexpr std::array<const wchar_t*, 5> kPreferredDirs = {
+        L"D:\\MapleFireReborn",
+        L"E:\\MapleFireReborn",
+        L"F:\\MapleFireReborn",
+        L"G:\\MapleFireReborn",
+        L"C:\\MapleFireReborn"
+    };
+
+    for (const wchar_t* candidate : kPreferredDirs) {
+        const std::filesystem::path dir(candidate);
+        if (HasEnoughFreeSpace(dir, kMinInstallFreeBytes) && EnsureDirectoryExists(dir)) {
+            return dir;
+        }
+    }
+
+    for (const wchar_t* candidate : kPreferredDirs) {
+        const std::filesystem::path dir(candidate);
+        if (EnsureDirectoryExists(dir)) {
+            return dir;
+        }
+    }
+
+    return {};
+}
+
+bool IsProcessPathMatching(DWORD processId, const std::filesystem::path& expectedPath) {
+    if (processId == 0 || expectedPath.empty()) {
+        return false;
+    }
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!hProcess) {
+        return false;
+    }
+    wchar_t processPath[MAX_PATH]{};
+    DWORD processPathLen = MAX_PATH;
+    const BOOL queryOk = QueryFullProcessImageNameW(hProcess, 0, processPath, &processPathLen);
+    CloseHandle(hProcess);
+    if (!queryOk) {
+        return false;
+    }
+    return PathsEqual(expectedPath, std::filesystem::path(processPath));
+}
+
+bool HandleCleanupRelay(const RelaunchArgs& relaunchArgs) {
+    if (relaunchArgs.cleanupPath.empty() && relaunchArgs.cleanupPid == 0) {
+        return true;
+    }
+
+    const std::filesystem::path cleanupPath(relaunchArgs.cleanupPath);
+    if (cleanupPath.empty() || PathsEqual(cleanupPath, std::filesystem::path(g_strCurrentModulePath))) {
+        return true;
+    }
+
+    if (relaunchArgs.cleanupPid != 0 &&
+        IsProcessRunning(relaunchArgs.cleanupPid) &&
+        IsProcessPathMatching(relaunchArgs.cleanupPid, cleanupPath)) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, relaunchArgs.cleanupPid);
+        if (hProc) {
+            TerminateProcess(hProc, 0);
+            WaitForSingleObject(hProc, 5000);
+            CloseHandle(hProc);
+        }
+    }
+
+    DeleteFileWithRetry(cleanupPath, 40, 100);
+
+    if (_wcsicmp(g_strCurrentExeName.c_str(), kCanonicalLauncherName) != 0) {
+        const std::filesystem::path canonicalPath = std::filesystem::path(g_strCurrentModulePath).parent_path() / kCanonicalLauncherName;
+        if (!PathsEqual(canonicalPath, std::filesystem::path(g_strCurrentModulePath))) {
+            if (!CopySelfToTarget(canonicalPath)) {
+                std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to promote launcher to canonical name: "
+                    << canonicalPath.c_str() << std::endl;
+                return false;
+            }
+            RelaunchArgs nextArgs;
+            nextArgs.cleanupPid = _getpid();
+            nextArgs.cleanupPath = g_strCurrentModulePath;
+            nextArgs.stage = L"promote";
+            if (!LaunchProcess(canonicalPath, nextArgs, canonicalPath.parent_path())) {
+                std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to relaunch canonical launcher: "
+                    << canonicalPath.c_str() << std::endl;
+                return false;
+            }
+            ExitProcess(0);
+        }
+    }
+
+    return true;
+}
+
+bool RelocateLauncherIfNeeded() {
+    if (IsInManagedInstallDir()) {
+        return true;
+    }
+
+    const std::filesystem::path targetDir = ResolveInstallDirectory();
+    if (targetDir.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path targetExe = targetDir / g_strCurrentExeName;
+    if (PathsEqual(targetExe, std::filesystem::path(g_strCurrentModulePath))) {
+        WriteLauncherConfigString(kLauncherConfigKeyGamePath, targetDir.wstring());
+        return true;
+    }
+
+    if (!CopySelfToTarget(targetExe)) {
+        std::wcout << __FILEW__ << L":" << __LINE__
+            << L" failed to copy launcher to target: " << targetExe.c_str()
+            << L" error=" << GetLastError() << std::endl;
+        return false;
+    }
+
+    WriteLauncherConfigString(kLauncherConfigKeyGamePath, targetDir.wstring());
+    CreateDesktopLauncherShortcut(targetDir, g_strCurrentExeName);
+
+    RelaunchArgs nextArgs;
+    nextArgs.cleanupPid = _getpid();
+    nextArgs.cleanupPath = g_strCurrentModulePath;
+    nextArgs.stage = L"relocate";
+    if (!LaunchProcess(targetExe, nextArgs, targetDir)) {
+        std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to launch relocated launcher: "
+            << targetExe.c_str() << std::endl;
+        return false;
+    }
+
+    ExitProcess(0);
+    return true;
+}
+
+} // namespace
 
 void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath, const LPCTSTR lpFileName) {
     IShellLink* pShellLink = NULL;
@@ -86,94 +456,36 @@ void CreateShortcut(LPCTSTR lpShortcutPath, LPCTSTR lpTargetPath, const LPCTSTR 
     }
 }
 
-bool IsProcessRunning(const TCHAR* exePath) {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-
-    PROCESSENTRY32 pe;
-    pe.dwSize = sizeof(PROCESSENTRY32);
-    if (!Process32First(hSnapshot, &pe)) {
-        CloseHandle(hSnapshot);
-        return false;
-    }
-
-    do {
-        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-        if (hProcess) {
-            TCHAR processPath[MAX_PATH];
-            DWORD dwSize = MAX_PATH;
-            if (QueryFullProcessImageName(hProcess, NULL, processPath, &dwSize)) {
-                if (_tcsicmp(processPath, exePath) == 0) {
-                    CloseHandle(hProcess);
-                    CloseHandle(hSnapshot);
-                    return true;
-                }
-            }
-            CloseHandle(hProcess);
+void CreateDesktopLauncherShortcut(const std::filesystem::path& targetDir, const std::wstring& fileName) {
+    TCHAR shortcutPath[MAX_PATH]{};
+    LPITEMIDLIST pidlDesktop = nullptr;
+    const HRESULT hrDesktop = SHGetSpecialFolderLocation(nullptr, CSIDL_DESKTOP, &pidlDesktop);
+    if (SUCCEEDED(hrDesktop) && pidlDesktop) {
+        if (SHGetPathFromIDList(pidlDesktop, shortcutPath)) {
+            swprintf(shortcutPath, TEXT("%s\\MapleFireReborn.lnk"), shortcutPath);
+            CreateShortcut(shortcutPath, targetDir.c_str(), fileName.c_str());
         }
-    } while (Process32Next(hSnapshot, &pe));
-
-    CloseHandle(hSnapshot);
-    return false;
-}
-
-void MoveToDirectory(LPCTSTR lpTargetDir, LPCTSTR oldPath) {
-    SetFileAttributes(oldPath, FILE_ATTRIBUTE_NORMAL);
-    if (!DeleteFile(oldPath)) {
-        std::wcout << __FILEW__ << ":" << __LINE__
-            << TEXT("Delete failed: ") << oldPath
-            << TEXT(" err:") << GetLastError() << std::endl;
-    }
-    if (!CopyFile(g_strCurrentModulePath.c_str(), oldPath, TRUE)) {
-        std::wcout << __FILEW__ << ":" << __LINE__ << g_strCurrentModulePath << TEXT("-->") << oldPath
-            << TEXT(" Copy failed: ") << oldPath << TEXT(" err:") << GetLastError() << std::endl;
-    }
-    WriteProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir);
-}
-
-bool IsInMapleFireRebornDir() {
-    std::wstring str = g_strCurrentModulePath.c_str();
-    std::filesystem::path currentPath = std::filesystem::path(g_strCurrentModulePath).parent_path();
-
-    wchar_t desktopPath[MAX_PATH]{};
-    HRESULT hr = SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL, SHGFP_TYPE_CURRENT, desktopPath);
-    if (SUCCEEDED(hr)) {
-        std::error_code ec;
-        if (std::filesystem::equivalent(currentPath, std::filesystem::path(desktopPath), ec) && !ec) {
-            return false;
-        }
+        CoTaskMemFree(pidlDesktop);
+        pidlDesktop = nullptr;
+        return;
     }
 
-    if (!currentPath.empty() && currentPath != currentPath.root_path()) {
-        return true;
-    }
-
-    std::cout << "aaa" << std::endl;
-    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__ << str << std::endl;
-    std::wcout << __FILEW__ << TEXT(":") << __FUNCTIONW__
-        << TEXT(" failed:") << __LINE__ << TEXT(" ") << str << std::endl;
-    return false;
+    std::wcout << __FILEW__ << TEXT(":") << __LINE__
+        << TEXT(" SHGetSpecialFolderLocation(CSIDL_DESKTOP) failed, skip shortcut. err=")
+        << hrDesktop << std::endl;
 }
 
 bool IsProcessRunning(DWORD dwProcessId) {
-    bool bRet = false;
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot) {
-        PROCESSENTRY32 pe;
-        pe.dwSize = sizeof(PROCESSENTRY32);
-        if (Process32First(hSnapshot, &pe)) {
-            do {
-                if (pe.th32ProcessID == dwProcessId) {
-                    bRet = true;
-                    break;
-                }
-            } while (Process32Next(hSnapshot, &pe));
-        }
-        CloseHandle(hSnapshot);
+    if (dwProcessId == 0) {
+        return false;
     }
-    return bRet;
+    HANDLE hProcess = OpenProcess(SYNCHRONIZE, FALSE, dwProcessId);
+    if (!hProcess) {
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(hProcess, 0);
+    CloseHandle(hProcess);
+    return wait == WAIT_TIMEOUT;
 }
 
 bool RequestRunningLauncherRunClient() {
@@ -194,16 +506,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                       _In_ int nCmdShow)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
     g_hInstance = hInstance;
 
     wchar_t modulePath[MAX_PATH]{};
     GetModuleFileName(hInstance, modulePath, MAX_PATH);
     g_strCurrentModulePath = modulePath;
     g_strCurrentExeName = PathFindFileName(modulePath);
-    wchar_t workPath[MAX_PATH]{};
-    GetCurrentDirectory(MAX_PATH, workPath);
-    g_strWorkPath = workPath;
+    g_strWorkPath = std::filesystem::path(modulePath).parent_path().wstring();
+    if (!g_strWorkPath.empty()) {
+        SetCurrentDirectoryW(g_strWorkPath.c_str());
+    }
 
     g_splashRenderer.SetInstance(hInstance);
     g_splashRenderer.SetWindowPlacementContext(&g_ptWindow, &g_szWindow);
@@ -230,76 +542,25 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 #ifndef _DEBUG
-    if (!IsInMapleFireRebornDir()) {
-        do {
-            LPCTSTR lpTargetDir = TEXT("C:\\MapleFireReborn");
-            const TCHAR* dirs[] = { TEXT("D:\\MapleFireReborn"), TEXT("E:\\MapleFireReborn"), TEXT("F:\\MapleFireReborn"), TEXT("G:\\MapleFireReborn"), TEXT("C:\\MapleFireReborn") };
-            for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-                CreateDirectory(dirs[i], NULL);
-                if (GetFileAttributes(dirs[i]) != INVALID_FILE_ATTRIBUTES) {
-                    lpTargetDir = dirs[i];
-                    break;
-                }
-            }
-
-            TCHAR szGamePath[MAX_PATH] = { 0 };
-            GetProfileString(TEXT("MapleFireReborn"), TEXT("GamePath"), lpTargetDir, szGamePath, MAX_PATH);
-
-            TCHAR oldPath[MAX_PATH];
-            swprintf(oldPath, TEXT("%s\\%s"), lpTargetDir, g_strCurrentExeName.c_str());
-
-            if (_tcsicmp(oldPath, g_strCurrentModulePath.c_str()) == 0) {
-                break;
-            }
-
-            MoveToDirectory(szGamePath, oldPath);
-
-            TCHAR shortcutPath[MAX_PATH]{};
-            LPITEMIDLIST pidlDesktop = nullptr;
-            HRESULT hrDesktop = SHGetSpecialFolderLocation(NULL, CSIDL_DESKTOP, &pidlDesktop);
-            if (SUCCEEDED(hrDesktop) && pidlDesktop) {
-                if (SHGetPathFromIDList(pidlDesktop, shortcutPath)) {
-                    swprintf(shortcutPath, TEXT("%s\\MapleFireReborn.lnk"), shortcutPath);
-                    CreateShortcut(shortcutPath, lpTargetDir, g_strCurrentExeName.c_str());
-                }
-                CoTaskMemFree(pidlDesktop);
-                pidlDesktop = nullptr;
-            } else {
-                std::wcout << __FILEW__ << TEXT(":") << __LINE__
-                    << TEXT(" SHGetSpecialFolderLocation(CSIDL_DESKTOP) failed, skip shortcut. err=")
-                    << hrDesktop << std::endl;
-            }
-
-            if (!IsProcessRunning(oldPath)) {
-                WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
-                ShellExecute(NULL, TEXT("open"), oldPath, g_strCurrentModulePath.c_str(), lpTargetDir, SW_SHOWNORMAL);
-                ExitProcess(0);
-            }
-            return 0;
-        } while (false);
-    } else {
-        if (lpCmdLine) {
-            DWORD pid = GetProfileInt(TEXT("MapleFireReborn"), TEXT("pid"), 0);
-            if (pid && IsProcessRunning(pid)) {
-                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-                if (hProc) {
-                    TerminateProcess(hProc, 0);
-                    CloseHandle(hProc);
-                }
-            }
-
-            SetFileAttributes(lpCmdLine, FILE_ATTRIBUTE_NORMAL);
-            DeleteFile(lpCmdLine);
-
-            if (g_strCurrentExeName.compare(TEXT("RebornLauncher.exe")) != 0) {
-                TCHAR newPath[MAX_PATH];
-                swprintf(newPath, TEXT("%s\\RebornLauncher.exe"), g_strWorkPath.c_str());
-                CopyFile(g_strCurrentModulePath.c_str(), newPath, TRUE);
-                WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
-                ShellExecute(NULL, TEXT("open"), newPath, g_strCurrentModulePath.c_str(), g_strWorkPath.c_str(), SW_SHOWNORMAL);
-                ExitProcess(0);
-            }
+    const RelaunchArgs relaunchArgs = ParseRelaunchArgsFromCommandLine();
+    if (!HandleCleanupRelay(relaunchArgs)) {
+        MessageBox(nullptr, TEXT("Launcher cleanup/update relay failed."), TEXT("Error"), MB_OK | MB_ICONERROR);
+        if (g_gdiplusToken != 0) {
+            Gdiplus::GdiplusShutdown(g_gdiplusToken);
+            g_gdiplusToken = 0;
         }
+        CoUninitialize();
+        return -1;
+    }
+
+    if (!RelocateLauncherIfNeeded()) {
+        MessageBox(nullptr, TEXT("Launcher first-run relocation failed."), TEXT("Error"), MB_OK | MB_ICONERROR);
+        if (g_gdiplusToken != 0) {
+            Gdiplus::GdiplusShutdown(g_gdiplusToken);
+            g_gdiplusToken = 0;
+        }
+        CoUninitialize();
+        return -1;
     }
 #endif
 

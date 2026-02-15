@@ -61,12 +61,6 @@ target_link_libraries(RebornLauncher
     ${LZ4_LIBRARY}
 )
 
-add_custom_command(TARGET RebornLauncher POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:RebornLauncher>/Texture"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/Texture"
-        "$<TARGET_FILE_DIR:RebornLauncher>/Texture"
-)
 #target_link_options(RebornLauncher
 #	PRIVATE
 #	/ENTRY:wWinMainCRTStartup

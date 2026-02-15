@@ -22,6 +22,21 @@ using workthread::netutils::JoinUrlPath;
 using workthread::netutils::NormalizeRelativeUrlPath;
 using workthread::netutils::TrimAscii;
 
+std::wstring QuoteCommandArg(const std::wstring& value) {
+	return L"\"" + value + L"\"";
+}
+
+std::wstring BuildRelaunchArgs(DWORD cleanupPid, const std::wstring& cleanupPath, const wchar_t* stage) {
+	std::wstring args = L"--cleanup-pid=" + std::to_wstring(cleanupPid);
+	if (!cleanupPath.empty()) {
+		args += L" --cleanup-path=" + QuoteCommandArg(cleanupPath);
+	}
+	if (stage && stage[0] != L'\0') {
+		args += L" --stage=" + std::wstring(stage);
+	}
+	return args;
+}
+
 std::string BuildSignalEndpoint(const std::string& baseUrl, const std::string& pagePath) {
 	return baseUrl + JoinUrlPath(pagePath, "signal");
 }
@@ -212,8 +227,8 @@ bool WorkThread::HandleSelfUpdateAndExit()
 	}
 
 	Stop();
-	WriteProfileString(TEXT("MapleFireReborn"), TEXT("pid"), std::to_wstring(_getpid()).c_str());
-	ShellExecute(NULL, L"open", L"UpdateTemp.exe", m_selfUpdateState.modulePath.c_str(), m_selfUpdateState.moduleDir.c_str(), SW_SHOWNORMAL);
+	const std::wstring args = BuildRelaunchArgs(_getpid(), m_selfUpdateState.modulePath, L"selfupdate");
+	ShellExecuteW(nullptr, L"open", L"UpdateTemp.exe", args.c_str(), m_selfUpdateState.moduleDir.c_str(), SW_SHOWNORMAL);
 	PostMessage(m_runtimeState.mainWnd, WM_DELETE_TRAY, 0, 0);
 	ExitProcess(0);
 	return true;

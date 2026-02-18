@@ -61,6 +61,7 @@ bool g_bRendering = true;
 WorkThread* g_workThreadPtr = nullptr;
 
 constexpr UINT ID_TRAY_OPEN = 5005;
+constexpr UINT ID_START_NEW_GAME = 5006;
 constexpr UINT_PTR kAnimTimerId = 7001;
 constexpr UINT kAnimIntervalMs = 90;
 constexpr COLORREF kTransparentColorKey = RGB(1, 1, 1);
@@ -500,6 +501,14 @@ bool RequestRunningLauncherRunClient() {
     return false;
 }
 
+bool RequestNewGameWithError(HWND owner) {
+    if (RequestRunningLauncherRunClient()) {
+        return true;
+    }
+    MessageBox(owner, TEXT("Failed to request new game launch."), TEXT("Error"), MB_OK | MB_ICONERROR);
+    return false;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                       _In_opt_ HINSTANCE hPrevInstance,
                       _In_ LPWSTR lpCmdLine,
@@ -688,6 +697,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    static ULONGLONG s_lastIdleClickTick = 0;
+    static POINT s_lastIdleClickPoint = { 0, 0 };
+
     switch (message)
     {
     case WM_CREATE:
@@ -716,8 +728,39 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_LBUTTONDOWN:
         if (g_splashRenderer.IsFollowingGameWindows()) {
+            s_lastIdleClickTick = 0;
             return 0;
         }
+    {
+        POINT clickPoint{};
+        clickPoint.x = static_cast<SHORT>(LOWORD(lParam));
+        clickPoint.y = static_cast<SHORT>(HIWORD(lParam));
+        ClientToScreen(hWnd, &clickPoint);
+
+        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG elapsed = (s_lastIdleClickTick == 0) ? static_cast<ULONGLONG>(-1) : (now - s_lastIdleClickTick);
+        const int maxDx = GetSystemMetrics(SM_CXDOUBLECLK);
+        const int maxDy = GetSystemMetrics(SM_CYDOUBLECLK);
+        const int dx = (clickPoint.x > s_lastIdleClickPoint.x)
+            ? (clickPoint.x - s_lastIdleClickPoint.x)
+            : (s_lastIdleClickPoint.x - clickPoint.x);
+        const int dy = (clickPoint.y > s_lastIdleClickPoint.y)
+            ? (clickPoint.y - s_lastIdleClickPoint.y)
+            : (s_lastIdleClickPoint.y - clickPoint.y);
+        const bool isDoubleClick =
+            elapsed <= static_cast<ULONGLONG>(GetDoubleClickTime()) &&
+            dx <= maxDx &&
+            dy <= maxDy;
+
+        s_lastIdleClickTick = now;
+        s_lastIdleClickPoint = clickPoint;
+
+        if (isDoubleClick) {
+            s_lastIdleClickTick = 0;
+            RequestNewGameWithError(hWnd);
+            return 0;
+        }
+    }
         ReleaseCapture();
         SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
         return 0;
@@ -729,6 +772,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         POINT pt{};
         GetCursorPos(&pt);
         HMENU hMenu = CreatePopupMenu();
+        AppendMenuW(hMenu, MF_STRING, ID_START_NEW_GAME, L"Start New Game");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"Exit");
         SetForegroundWindow(hWnd);
         TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
@@ -784,6 +829,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
         case ID_TRAY_OPEN:
             g_trayIconManager.RestoreFromTray(hWnd);
+            break;
+        case ID_START_NEW_GAME:
+            if (!g_splashRenderer.IsFollowingGameWindows()) {
+                RequestNewGameWithError(hWnd);
+            }
             break;
         case IDM_EXIT:
             DestroyWindow(hWnd);

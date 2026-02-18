@@ -117,33 +117,6 @@ WorkThread::~WorkThread()
 // Thread entry point that terminates stray processes and runs the worker.
 DWORD __stdcall WorkThread::ThreadProc(LPVOID lpParameter)
 {
-	// HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	// if (hSnapshot != INVALID_HANDLE_VALUE) {
-	// 	PROCESSENTRY32 pe;
-	// 	pe.dwSize = sizeof(PROCESSENTRY32);
-	// 	if (Process32First(hSnapshot, &pe)) {
-	// 		do {
-	// 			HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-	// 			if (hProcess) {
-	// 				TCHAR processPath[MAX_PATH];
-	// 				DWORD dwSize = MAX_PATH;
-	// 				if (QueryFullProcessImageName(hProcess, 0, processPath, &dwSize))
-	// 				{
-	// 					std::wstring strProcessPath = processPath;
-	// 					if (strProcessPath.find(L"MapleFireReborn.exe") != std::string::npos){
-	// 						TerminateProcess(hProcess, 0);
-	// 					}
-	// 					if (strProcessPath.find(L"MapleStory.exe") != std::string::npos) {
-	// 						TerminateProcess(hProcess, 0);
-	// 					}
-	// 				}
-	// 				CloseHandle(hProcess);
-	// 			}
-	// 		} while (Process32Next(hSnapshot, &pe));
-	// 	}
-	// 	CloseHandle(hSnapshot);
-	// }
-
 	WorkThread* pThis = (WorkThread*)lpParameter;
 	if (pThis) {
 		return pThis->Run();
@@ -168,6 +141,10 @@ bool WorkThread::InitializeDownloadEnvironment()
 	}
 
 	m_networkState.client = std::make_unique<httplib::Client>(m_networkState.url);
+	m_networkState.client->set_follow_location(true);
+	m_networkState.client->set_connection_timeout(8, 0);
+	m_networkState.client->set_read_timeout(30, 0);
+	m_networkState.client->set_write_timeout(15, 0);
 	return true;
 }
 
@@ -215,7 +192,15 @@ void WorkThread::RefreshRemoteManifestIfChanged()
 		}
 	}
 
-	if (!strRemoteVersionDatMD5.empty() && m_versionState.localVersionMD5 != strRemoteVersionDatMD5) {
+	if (strRemoteVersionDatMD5.empty()) {
+		std::cout << "Version.dat.md5 unavailable, fallback to direct Version.dat fetch." << std::endl;
+		if (!RefreshRemoteVersionManifest()) {
+			std::cout << "Direct Version.dat fetch fallback failed." << std::endl;
+		}
+		return;
+	}
+
+	if (m_versionState.localVersionMD5 != strRemoteVersionDatMD5) {
 		RefreshRemoteVersionManifest();
 	}
 }
@@ -311,31 +296,23 @@ bool WorkThread::DownloadBasePackage()
 			localArchivePath = "base_package.7z";
 		}
 		const std::string p2pResourcePath = ResolveBasePackageP2PResourcePath(packageUrl, absolutePackageUrl);
-		bool p2pAttempted = false;
+		m_downloadState.currentDownloadProgress = 0;
+		m_downloadState.currentDownloadSize = 0;
 
-		for (int attempt = 0; attempt < 2; ++attempt) {
-			m_downloadState.currentDownloadProgress = 0;
-			m_downloadState.currentDownloadSize = 0;
-
-			if (!p2pAttempted && !p2pResourcePath.empty()) {
-				p2pAttempted = true;
-				downloaded = resumeDownloader.TryP2P(
-					p2pResourcePath,
-					localArchivePath,
-					[](uint64_t, uint64_t) {});
-				if (downloaded) {
-					downloadedArchivePath = localArchivePath;
-					break;
-				}
-			}
-
-			downloaded = DownloadFileChunkedWithResume(absolutePackageUrl, localArchivePath, 2);
+		if (!p2pResourcePath.empty()) {
+			downloaded = resumeDownloader.TryP2P(
+				p2pResourcePath,
+				localArchivePath,
+				[](uint64_t, uint64_t) {});
 			if (downloaded) {
 				downloadedArchivePath = localArchivePath;
 				break;
 			}
 		}
+
+		downloaded = DownloadFileChunkedWithResume(absolutePackageUrl, localArchivePath, 2);
 		if (downloaded) {
+			downloadedArchivePath = localArchivePath;
 			break;
 		}
 	}

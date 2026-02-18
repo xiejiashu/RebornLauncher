@@ -16,3 +16,4 @@ CryptoLoader IMG request was dispatched asynchronously causing file-exists race 
 Patch introduced a reference to `statePath` before declaration in chunk downloader -> inserted new usage without verifying variable scope/order -> compile immediately after patch and move shared path declarations above all usage.
 `std::max` compile error in dialog layout (`LONG` vs `int`) -> mixed Win32 RECT types with integer literals during UI sizing refactor -> normalize to `int` first, then call `std::max` and rebuild.
 Asset cleanup command was blocked by sandbox policy (`Remove-Item`) -> assumed direct file deletion command was permitted -> switch to `git rm`/patch workflow when policy blocks shell deletion.
+PowerShell HTTP response probe assumed string content and called `Substring` on byte payload -> did not normalize `Invoke-WebRequest` binary content before slicing -> decode bytes to text first (or inspect length/type) before previewing body.

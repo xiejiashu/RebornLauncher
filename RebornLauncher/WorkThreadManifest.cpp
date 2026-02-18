@@ -199,6 +199,8 @@ bool WorkThread::RefreshRemoteVersionManifest()
 	const std::string strVersionDatPath = m_versionState.manifestPath.empty()
 		? JoinUrlPath(m_networkState.page, "Version.dat")
 		: m_versionState.manifestPath;
+	constexpr int kManifestFetchMaxAttempts = 3;
+	constexpr DWORD kManifestFetchRetryDelayMs = 250;
 
 	auto fetchManifest = [this](const std::string& requestTarget) -> httplib::Result {
 		httplib::Headers headers;
@@ -238,14 +240,29 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		return m_networkState.client->Get(requestTarget.c_str(), headers);
 	};
 
-	httplib::Result res = fetchManifest(strVersionDatPath);
+	auto fetchManifestWithRetry = [&](const std::string& requestTarget) -> httplib::Result {
+		httplib::Result lastRes;
+		for (int attempt = 1; attempt <= kManifestFetchMaxAttempts; ++attempt) {
+			auto current = fetchManifest(requestTarget);
+			if (current && current->status == 200 && !current->body.empty()) {
+				return current;
+			}
+			lastRes = std::move(current);
+			if (attempt < kManifestFetchMaxAttempts) {
+				Sleep(kManifestFetchRetryDelayMs);
+			}
+		}
+		return lastRes;
+	};
+
+	httplib::Result res = fetchManifestWithRetry(strVersionDatPath);
 	std::string resolvedPath = strVersionDatPath;
 
 	if ((!res || res->status != 200 || res->body.empty()) && !IsHttpUrl(strVersionDatPath)) {
 		const std::string fileName = GetFileNameFromUrl(strVersionDatPath);
 		const std::string fallbackPath = JoinUrlPath(m_networkState.page, fileName.empty() ? "Version.dat" : fileName);
 		if (fallbackPath != strVersionDatPath) {
-			httplib::Result fallbackRes = fetchManifest(fallbackPath);
+			httplib::Result fallbackRes = fetchManifestWithRetry(fallbackPath);
 			if (fallbackRes && fallbackRes->status == 200 && !fallbackRes->body.empty()) {
 				res = std::move(fallbackRes);
 				resolvedPath = fallbackPath;
@@ -260,6 +277,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		std::cout << "Failed to fetch Version.dat from " << resolvedPath
 			<< ", status: " << statusText
 			<< ", error: " << errorCode
+			<< ", retries: " << kManifestFetchMaxAttempts
 			<< std::endl;
 		return false;
 	}

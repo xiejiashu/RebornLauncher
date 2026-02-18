@@ -164,6 +164,18 @@ bool WorkThread::LaunchGameClient()
 	}
 
 	std::cout << "Client launched, pid=" << pi.dwProcessId << std::endl;
+	const DWORD quickExitCheck = WaitForSingleObject(pi.hProcess, 100);
+	if (quickExitCheck == WAIT_OBJECT_0) {
+		DWORD exitCode = 0;
+		if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
+			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
+				<< ", exit code=" << exitCode << std::endl;
+		}
+		else {
+			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
+				<< ", exit code=<unknown>" << std::endl;
+		}
+	}
 	return true;
 }
 

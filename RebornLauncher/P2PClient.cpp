@@ -13,6 +13,10 @@
 
 namespace {
 
+constexpr int kP2PConnectTimeoutSec = 8;
+constexpr int kP2PReadTimeoutSec = 20;
+constexpr int kP2PWriteTimeoutSec = 15;
+
 std::string NormalizeRelativePath(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     if (path.empty()) {
@@ -140,9 +144,9 @@ bool TryDownloadFromCandidates(ClientType& client,
                                const std::string& signalAuthToken,
                                const std::function<void(uint64_t, uint64_t)>& onProgress) {
     client.set_follow_location(true);
-    client.set_connection_timeout(8, 0);
-    client.set_read_timeout(600, 0);
-    client.set_write_timeout(15, 0);
+    client.set_connection_timeout(kP2PConnectTimeoutSec, 0);
+    client.set_read_timeout(kP2PReadTimeoutSec, 0);
+    client.set_write_timeout(kP2PWriteTimeoutSec, 0);
 
     std::filesystem::path targetPath(filePath);
     std::filesystem::path tempPath = targetPath;
@@ -209,6 +213,11 @@ bool TryDownloadFromCandidates(ClientType& client,
         }
         else {
             total = downloaded;
+        }
+
+        if (downloaded == 0) {
+            std::filesystem::remove(tempPath, ec);
+            continue;
         }
 
         if (!ReplaceFile(tempPath, targetPath)) {

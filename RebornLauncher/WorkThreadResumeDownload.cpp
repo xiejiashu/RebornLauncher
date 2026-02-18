@@ -67,6 +67,10 @@ bool ResumeDownloader::DownloadHttp(
 	if (m_networkState.client == nullptr) {
 		return false;
 	}
+	m_networkState.client->set_follow_location(true);
+	m_networkState.client->set_connection_timeout(8, 0);
+	m_networkState.client->set_read_timeout(30, 0);
+	m_networkState.client->set_write_timeout(15, 0);
 
 	httplib::Result res;
 	{

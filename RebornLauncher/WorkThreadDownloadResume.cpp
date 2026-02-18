@@ -26,9 +26,10 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		MarkClientDownloadProgress(ownerProcessId, downloaded, total);
 	};
 
-	// if (downloader.TryP2P(strUrl, file_path, reportProgress)) {
-	// 	return true;
-	// }
+	if (downloader.TryP2P(strUrl, file_path, reportProgress)) {
+		MarkClientDownloadFinished(ownerProcessId);
+		return true;
+	}
 
 	if (m_networkState.client == nullptr) {
 		MarkClientDownloadFinished(ownerProcessId);

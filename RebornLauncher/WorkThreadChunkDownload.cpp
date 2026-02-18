@@ -20,6 +20,7 @@ using workthread::chunkstate::ChunkState;
 using workthread::chunkstate::ChunkStateStore;
 using workthread::netutils::ParseTotalSizeFromResponse;
 ChunkStateStore kChunkStateStore;
+constexpr int kSingleStreamReadTimeoutSec = 45;
 
 void MarkFileHidden(const std::string& path) {
 	std::error_code ec;
@@ -82,7 +83,7 @@ bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, con
 	};
 
 	httplib::Result res;
-	res = session.Get(onBody, 120);
+	res = session.Get(onBody, kSingleStreamReadTimeoutSec);
 
 	file.close();
 	if (!res || (res->status != 200 && res->status != 206)) {
@@ -179,7 +180,19 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	tmpFile.close();
 
 	if (!downloadOk) {
-		return false;
+		m_downloadState.currentDownloadSize = static_cast<int>(remoteTotalSize);
+		m_downloadState.currentDownloadProgress = 0;
+		const bool fallbackOk = DownloadFileFromAbsoluteUrl(absoluteUrl, filePath);
+		if (!fallbackOk) {
+			return false;
+		}
+
+		std::error_code ec;
+		std::filesystem::remove(tmpPath, ec);
+		std::filesystem::remove(statePath, ec);
+		MarkFileHidden(filePath);
+		m_downloadState.currentDownloadProgress = static_cast<int>(remoteTotalSize);
+		return true;
 	}
 
 	if (!kChunkStateStore.AreAllChunksDone(state)) {

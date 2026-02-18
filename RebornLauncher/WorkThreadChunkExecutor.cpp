@@ -7,6 +7,13 @@
 
 namespace workthread::chunkdownload {
 
+namespace {
+
+constexpr int kChunkMaxAttemptsPerWorker = 2;
+constexpr int kChunkReadTimeoutSec = 30;
+
+} // namespace
+
 ChunkDownloadExecutor::ChunkDownloadExecutor(
 	const workthread::http::DownloadHttpSession& session,
 	workthread::chunkstate::ChunkState& state,
@@ -67,7 +74,7 @@ void ChunkDownloadExecutor::WorkerLoop(size_t workerId) {
 		}
 
 		int attempt = 0;
-		while (attempt < 4 && !m_failed.load()) {
+		while (attempt < kChunkMaxAttemptsPerWorker && !m_failed.load()) {
 			uint64_t chunkStart = 0;
 			uint64_t chunkEnd = 0;
 			uint64_t chunkDownloaded = 0;
@@ -147,7 +154,7 @@ void ChunkDownloadExecutor::WorkerLoop(size_t workerId) {
 				return true;
 			};
 
-			httplib::Result res = m_session.Get(headers, receiver, 120);
+			httplib::Result res = m_session.Get(headers, receiver, kChunkReadTimeoutSec);
 
 			PersistState();
 

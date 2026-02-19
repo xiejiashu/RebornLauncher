@@ -1599,7 +1599,7 @@ void UpdateForgeApp::RunWorker(std::wstring root, std::wstring key, bool encrypt
                 continue;
             std::wstring ext = fs::path(page).extension().wstring();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-            if (ext == L".exe" || ext == L".dll" || ext == L".wz" || ext == L".ini" || ext == L".acm" || ext == L".manifest")
+            if (ext == L".exe" || ext == L".dll" || ext == L".wz" || ext == L".ini" || ext == L".acm" || ext == L".manifest" || ext == L".ini")
             {
                 runtimeCandidates.insert(page);
             }

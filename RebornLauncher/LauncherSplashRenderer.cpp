@@ -13,6 +13,23 @@
 #include "RebornLauncher.h"
 #include "WorkThread.h"
 
+namespace {
+
+std::wstring FitStatusLabel(const std::wstring& raw, size_t maxChars) {
+    if (raw.empty()) {
+        return L"Working...";
+    }
+    if (raw.size() <= maxChars) {
+        return raw;
+    }
+    if (maxChars < 4) {
+        return raw.substr(0, maxChars);
+    }
+    return raw.substr(0, maxChars - 3) + L"...";
+}
+
+} // namespace
+
 LauncherSplashRenderer::~LauncherSplashRenderer() = default;
 
 void LauncherSplashRenderer::SetInstance(HINSTANCE hInstance) {
@@ -145,6 +162,8 @@ void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, WorkThread& workThre
         return;
     }
 
+    const std::wstring globalStatus = FitStatusLabel(workThread.GetLauncherStatus(), 56);
+    m_globalStatusText = globalStatus;
     const std::wstring globalFileRaw = workThread.GetCurrentDownloadFile();
     const std::wstring globalFileName = GetDisplayFileName(globalFileRaw);
     const int globalTotal = workThread.GetCurrentDownloadSize();
@@ -179,6 +198,7 @@ void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, WorkThread& workThre
         state.downloadedBytes = info.downloadDoneBytes;
         state.totalBytes = info.downloadTotalBytes;
         state.fileName = GetDisplayFileName(info.downloadFile);
+        state.statusText = globalStatus;
         if (state.downloading && state.fileName.empty() && !globalFileName.empty()) {
             state.fileName = globalFileName;
         }
@@ -335,19 +355,22 @@ void LauncherSplashRenderer::DrawScene(HWND hWnd, HDC hdc) {
                 graphics.FillEllipse(&fallbackBrush, fallbackCx - 20, fallbackCy - 20, 40, 40);
             }
 
+            std::wstring label = FitStatusLabel(pig.statusText, 42);
             if (pig.downloading) {
-                const std::wstring label = (pig.fileName.empty() ? L"unknown" : pig.fileName) + L" " + std::to_wstring(pig.percent) + L"%";
-                const float labelW = static_cast<float>((std::max)(160, (std::min)(gameWidth - 24, 420)));
-                float labelX = static_cast<float>(drawX + drawW / 2) - labelW * 0.5f;
-                labelX = (std::max)(0.0f, (std::min)(static_cast<float>(width) - labelW, labelX));
-                const float labelY = static_cast<float>((std::max)(2, drawY - 26));
-                Gdiplus::RectF labelRect(labelX, labelY, labelW, 22.0f);
-                Gdiplus::RectF shadowRect = labelRect;
-                shadowRect.X += 1.0f;
-                shadowRect.Y += 1.0f;
-                graphics.DrawString(label.c_str(), -1, &labelFont, shadowRect, &centerFormat, &labelShadow);
-                graphics.DrawString(label.c_str(), -1, &labelFont, labelRect, &centerFormat, &labelText);
+                std::wstring progressLabel = (pig.fileName.empty() ? L"updating" : pig.fileName);
+                progressLabel += L" " + std::to_wstring(pig.percent) + L"%";
+                label += L" | " + progressLabel;
             }
+            const float labelW = static_cast<float>((std::max)(180, (std::min)(gameWidth - 24, 520)));
+            float labelX = static_cast<float>(drawX + drawW / 2) - labelW * 0.5f;
+            labelX = (std::max)(0.0f, (std::min)(static_cast<float>(width) - labelW, labelX));
+            const float labelY = static_cast<float>((std::max)(2, drawY - 26));
+            Gdiplus::RectF labelRect(labelX, labelY, labelW, 22.0f);
+            Gdiplus::RectF shadowRect = labelRect;
+            shadowRect.X += 1.0f;
+            shadowRect.Y += 1.0f;
+            graphics.DrawString(label.c_str(), -1, &labelFont, shadowRect, &centerFormat, &labelShadow);
+            graphics.DrawString(label.c_str(), -1, &labelFont, labelRect, &centerFormat, &labelText);
         }
     } else {
         int pigCenterX = width / 2;
@@ -386,6 +409,19 @@ void LauncherSplashRenderer::DrawScene(HWND hWnd, HDC hdc) {
         shadowRect.Y += 2.0f;
         graphics.DrawString(percentText.c_str(), -1, &percentFont, shadowRect, &format, &shadowBrush);
         graphics.DrawString(percentText.c_str(), -1, &percentFont, textRect, &format, &textBrush);
+
+        Gdiplus::Font statusFont(&fontFamily, 14.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::RectF statusRect(
+            static_cast<float>((std::max)(0, pigCenterX - 210)),
+            percentY + 58.0f,
+            420.0f,
+            26.0f);
+        Gdiplus::RectF statusShadow = statusRect;
+        statusShadow.X += 1.0f;
+        statusShadow.Y += 1.0f;
+        const std::wstring idleStatus = FitStatusLabel(m_globalStatusText, 54);
+        graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusShadow, &format, &shadowBrush);
+        graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusRect, &format, &textBrush);
     }
 
     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);

@@ -233,6 +233,10 @@ void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, 
     const int currentCount = workThread.GetCurrentDownload();
     const int fileSize = workThread.GetCurrentDownloadSize();
     const int fileProgress = workThread.GetCurrentDownloadProgress();
+    std::wstring stageStatus = workThread.GetLauncherStatus();
+    if (stageStatus.empty()) {
+        stageStatus = L"Working...";
+    }
     if (m_ui.totalProgress && m_ui.fileProgress) {
         SendMessage(m_ui.totalProgress, PBM_SETRANGE32, 0, (std::max)(1, totalCount));
         SendMessage(m_ui.totalProgress, PBM_SETPOS, currentCount, 0);
@@ -243,6 +247,30 @@ void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, 
     std::wstring fileName = workThread.GetCurrentDownloadFile();
     if (!fileName.empty()) {
         m_animStatusText = L"Updating: " + fileName;
+    } else {
+        m_animStatusText = stageStatus;
+    }
+
+    if (m_ui.statusText) {
+        const std::wstring p2pPrefix = m_p2pSettings.enabled ? L"P2P ON | " : L"P2P OFF | ";
+        SetWindowTextW(m_ui.statusText, (p2pPrefix + stageStatus).c_str());
+    }
+    if (m_ui.totalLabel) {
+        const int safeTotalText = (std::max)(1, totalCount);
+        const int safeCurrentText = (std::max)(0, (std::min)(currentCount, safeTotalText));
+        const std::wstring totalText = L"Total: " + std::to_wstring(safeCurrentText) + L"/" + std::to_wstring(safeTotalText);
+        SetWindowTextW(m_ui.totalLabel, totalText.c_str());
+    }
+    if (m_ui.fileLabel) {
+        std::wstring fileText = stageStatus;
+        if (!fileName.empty()) {
+            fileText += L" | " + fileName;
+            if (fileSize > 0) {
+                const int safeProgress = (std::max)(0, (std::min)(fileProgress, fileSize));
+                fileText += L" (" + std::to_wstring(safeProgress) + L"/" + std::to_wstring(fileSize) + L")";
+            }
+        }
+        SetWindowTextW(m_ui.fileLabel, fileText.c_str());
     }
 
     const int safeTotal = (std::max)(1, totalCount);

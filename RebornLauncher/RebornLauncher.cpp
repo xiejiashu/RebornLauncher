@@ -506,6 +506,8 @@ bool RequestNewGameWithError(HWND owner) {
         return true;
     }
     MessageBox(owner, TEXT("Failed to request new game launch."), TEXT("Error"), MB_OK | MB_ICONERROR);
+	// 结束所有可能的僵尸实例
+    
     return false;
 }
 

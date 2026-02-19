@@ -135,19 +135,28 @@ void WorkThread::MarkClientDownloadFinished(DWORD processId)
 
 bool WorkThread::LaunchGameClient()
 {
+	SetLauncherStatus(L"Launching game client...");
 	STARTUPINFOA si = { sizeof(si) };
 	PROCESS_INFORMATION pi{};
 
 	char currentDir[MAX_PATH] = { 0 };
 	GetCurrentDirectoryA(MAX_PATH, currentDir);
 
-	char exePathBuf[MAX_PATH] = { 0 };
-	std::string exePathStr = wstr2str(m_szProcessName);
-	strncpy_s(exePathBuf, exePathStr.c_str(), MAX_PATH - 1);
-	if (!CreateProcessA(NULL, exePathBuf, NULL, NULL, FALSE, 0, NULL, currentDir, &si, &pi)) {
-		std::cerr << "CreateProcess failed, error: " << GetLastError() << std::endl;
+	std::string exePathStr = std::string(currentDir) + "\\" + wstr2str(m_szProcessName);
+	// Ð´ÏÂÂ·¾¶
+	LogUpdateError("UF-LAUNCH-EXEPATH", "WorkThread::LaunchGameClient", "Launching game client", exePathStr);
+	if (!CreateProcessA(NULL, &exePathStr[0], NULL, NULL, FALSE, 0, NULL, currentDir, &si, &pi)) {
+		const DWORD lastError = GetLastError();
+		std::cerr << "CreateProcess failed, error: " << lastError << std::endl;
+		SetLauncherStatus(L"Failed: game launch process creation.");
+		LogUpdateError(
+			"UF-LAUNCH-CREATEPROCESS",
+			"WorkThread::LaunchGameClient",
+			"CreateProcess failed",
+			std::string("exe_path=") + exePathStr,
+			lastError);
 		return false;
-	}
+	} 
 
 	if (pi.hThread) {
 		CloseHandle(pi.hThread);
@@ -164,16 +173,30 @@ bool WorkThread::LaunchGameClient()
 	}
 
 	std::cout << "Client launched, pid=" << pi.dwProcessId << std::endl;
+	SetLauncherStatus(L"Game client launched.");
 	const DWORD quickExitCheck = WaitForSingleObject(pi.hProcess, 100);
 	if (quickExitCheck == WAIT_OBJECT_0) {
 		DWORD exitCode = 0;
 		if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
 			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
 				<< ", exit code=" << exitCode << std::endl;
+			SetLauncherStatus(L"Warning: game exited shortly after launch.");
+			LogUpdateError(
+				"UF-LAUNCH-QUICKEXIT",
+				"WorkThread::LaunchGameClient",
+				"Client exited shortly after launch",
+				std::string("pid=") + std::to_string(pi.dwProcessId) + ", exit_code=" + std::to_string(exitCode));
 		}
 		else {
 			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
 				<< ", exit code=<unknown>" << std::endl;
+			SetLauncherStatus(L"Warning: game exited shortly after launch.");
+			LogUpdateError(
+				"UF-LAUNCH-QUICKEXIT",
+				"WorkThread::LaunchGameClient",
+				"Client exited shortly after launch",
+				std::string("pid=") + std::to_string(pi.dwProcessId) + ", exit_code=<unknown>",
+				GetLastError());
 		}
 	}
 	return true;
@@ -237,6 +260,7 @@ void WorkThread::TerminateAllGameProcesses()
 
 void WorkThread::Stop()
 {
+	SetLauncherStatus(L"Stopping launcher services...");
 	httplib::Client cli("localhost", 12345);
 	cli.Get("/Stop");
 	m_runtimeState.run = FALSE;

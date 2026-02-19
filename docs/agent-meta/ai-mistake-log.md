@@ -17,3 +17,6 @@ Patch introduced a reference to `statePath` before declaration in chunk download
 `std::max` compile error in dialog layout (`LONG` vs `int`) -> mixed Win32 RECT types with integer literals during UI sizing refactor -> normalize to `int` first, then call `std::max` and rebuild.
 Asset cleanup command was blocked by sandbox policy (`Remove-Item`) -> assumed direct file deletion command was permitted -> switch to `git rm`/patch workflow when policy blocks shell deletion.
 PowerShell HTTP response probe assumed string content and called `Substring` on byte payload -> did not normalize `Invoke-WebRequest` binary content before slicing -> decode bytes to text first (or inspect length/type) before previewing body.
+
+Used unsupported httplib::Server::set_reuse_addr API -> assumed installed httplib exposed that method -> compile immediately after server-thread edits and only use APIs verified in this tree.
+Deleted a newly added source file and assumed project regeneration would drop it immediately -> stale/generated VS target still referenced missing source -> verify generated vcxproj source entries after add/remove and keep temporary stub until clean reconfigure.

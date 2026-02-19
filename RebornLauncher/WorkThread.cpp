@@ -221,19 +221,19 @@ bool WorkThread::HandleSelfUpdateAndExit()
 
 bool WorkThread::PublishMappingsAndLaunchInitialClient()
 {
-	unsigned long long dwTick = GetTickCount64();
-	WriteDataToMapping();
+	// unsigned long long dwTick = GetTickCount64();
+	// WriteDataToMapping(); 不写入映射了，直接让客户端从文件读取，减少一次内存拷贝和映射资源占用
 
-	unsigned long long dwNewTick = GetTickCount64();
-	std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
-	dwTick = dwNewTick;
+	// unsigned long long dwNewTick = GetTickCount64();
+	// std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
+	// dwTick = dwNewTick;
 
 	if (!LaunchGameClient()) {
 		return false;
 	}
 
-	dwNewTick = GetTickCount64();
-	std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
+	// dwNewTick = GetTickCount64();
+	// std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
 	return true;
 }
 

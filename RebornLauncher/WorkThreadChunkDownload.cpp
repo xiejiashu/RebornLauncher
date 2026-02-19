@@ -9,6 +9,7 @@
 
 #include <httplib.h>
 
+#include "Encoding.h"
 #include "WorkThreadChunkExecutor.h"
 #include "WorkThreadChunkState.h"
 #include "WorkThreadHttpSession.h"
@@ -42,8 +43,14 @@ void MarkFileHidden(const std::string& path) {
 
 bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath)
 {
+	SetLauncherStatus(L"HTTP single-stream download: " + str2wstr(filePath));
 	workthread::http::DownloadHttpSession session;
 	if (!workthread::http::DownloadHttpSession::CreateFromAbsoluteUrl(absoluteUrl, session)) {
+		LogUpdateError(
+			"UF-CHUNK-URL",
+			"WorkThread::DownloadFileFromAbsoluteUrl",
+			"Failed to create HTTP session from URL",
+			std::string("url=") + absoluteUrl + ", file=" + filePath);
 		return false;
 	}
 
@@ -73,6 +80,12 @@ bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, con
 
 	std::ofstream file(filePath, std::ios::binary | std::ios::trunc);
 	if (!file.is_open()) {
+		LogUpdateError(
+			"UF-CHUNK-FILE",
+			"WorkThread::DownloadFileFromAbsoluteUrl",
+			"Failed to open local file for write",
+			std::string("file=") + filePath,
+			GetLastError());
 		return false;
 	}
 
@@ -87,6 +100,14 @@ bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, con
 
 	file.close();
 	if (!res || (res->status != 200 && res->status != 206)) {
+		LogUpdateError(
+			"UF-CHUNK-HTTP",
+			"WorkThread::DownloadFileFromAbsoluteUrl",
+			"Single-stream HTTP download failed",
+			std::string("url=") + absoluteUrl + ", file=" + filePath,
+			0,
+			res ? res->status : 0,
+			static_cast<int>(res.error()));
 		return false;
 	}
 
@@ -99,13 +120,24 @@ bool WorkThread::DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, con
 
 bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount)
 {
+	SetLauncherStatus(L"HTTP chunked download: " + str2wstr(filePath));
 	workthread::http::DownloadHttpSession session;
 	if (!workthread::http::DownloadHttpSession::CreateFromAbsoluteUrl(absoluteUrl, session)) {
+		LogUpdateError(
+			"UF-CHUNK-URL",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Failed to create HTTP session from URL",
+			std::string("url=") + absoluteUrl + ", file=" + filePath);
 		return false;
 	}
 
 	uint64_t remoteTotalSize = 0;
 	if (!session.ProbeRemoteTotalSize(remoteTotalSize, 30) || remoteTotalSize == 0) {
+		LogUpdateError(
+			"UF-CHUNK-PROBE",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Failed to probe remote file size",
+			std::string("url=") + absoluteUrl + ", file=" + filePath);
 		return false;
 	}
 
@@ -149,6 +181,11 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	}
 
 	if (!kChunkStateStore.EnsureSizedTempFile(tmpPath, remoteTotalSize)) {
+		LogUpdateError(
+			"UF-CHUNK-TMP",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Failed to prepare chunk temp file",
+			std::string("tmp_path=") + tmpPath + ", target=" + filePath);
 		return false;
 	}
 
@@ -159,6 +196,12 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 
 	std::fstream tmpFile(tmpPath, std::ios::binary | std::ios::in | std::ios::out);
 	if (!tmpFile.is_open()) {
+		LogUpdateError(
+			"UF-CHUNK-TMP",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Failed to open chunk temp file",
+			std::string("tmp_path=") + tmpPath,
+			GetLastError());
 		return false;
 	}
 
@@ -180,10 +223,16 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	tmpFile.close();
 
 	if (!downloadOk) {
+		SetLauncherStatus(L"Chunked download failed, retrying single-stream: " + str2wstr(filePath));
 		m_downloadState.currentDownloadSize = static_cast<int>(remoteTotalSize);
 		m_downloadState.currentDownloadProgress = 0;
 		const bool fallbackOk = DownloadFileFromAbsoluteUrl(absoluteUrl, filePath);
 		if (!fallbackOk) {
+			LogUpdateError(
+				"UF-CHUNK-FALLBACK",
+				"WorkThread::DownloadFileChunkedWithResume",
+				"Chunked download failed and single-stream fallback also failed",
+				std::string("url=") + absoluteUrl + ", file=" + filePath);
 			return false;
 		}
 
@@ -196,6 +245,11 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	}
 
 	if (!kChunkStateStore.AreAllChunksDone(state)) {
+		LogUpdateError(
+			"UF-CHUNK-INCOMPLETE",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Chunk download finished with incomplete state",
+			std::string("url=") + absoluteUrl + ", file=" + filePath);
 		return false;
 	}
 
@@ -203,10 +257,16 @@ bool WorkThread::DownloadFileChunkedWithResume(const std::string& absoluteUrl, c
 	std::filesystem::remove(filePath, ec);
 	std::filesystem::rename(tmpPath, filePath, ec);
 	if (ec) {
+		LogUpdateError(
+			"UF-CHUNK-RENAME",
+			"WorkThread::DownloadFileChunkedWithResume",
+			"Failed to rename chunk temp file to target file",
+			std::string("tmp_path=") + tmpPath + ", target=" + filePath + ", error=" + ec.message());
 		return false;
 	}
 	MarkFileHidden(filePath);
 	MarkFileHidden(statePath);
 	m_downloadState.currentDownloadProgress = static_cast<int>(remoteTotalSize);
+	SetLauncherStatus(L"Chunked download complete: " + str2wstr(filePath));
 	return true;
 }

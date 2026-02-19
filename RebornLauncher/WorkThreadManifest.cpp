@@ -40,15 +40,33 @@ using workthread::netutils::TrimAscii;
 
 bool WorkThread::FetchBootstrapConfig()
 {
+	SetLauncherStatus(L"Fetching bootstrap configuration...");
 	std::cout << "FetchBootstrapConfig" << std::endl;
 	httplib::Client cli{ kBootstrapHost };
 	auto res = cli.Get(kBootstrapPath);
 	if (!res || res->status != 200) {
+		SetLauncherStatus(L"Failed: bootstrap configuration request.");
 		if (res) {
 			std::cout << "Failed to fetch bootstrap payload, status: " << res->status << std::endl;
+			LogUpdateError(
+				"UF-BOOTSTRAP-HTTP",
+				"WorkThread::FetchBootstrapConfig",
+				"Bootstrap HTTP request returned non-200 status",
+				std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath,
+				0,
+				res->status,
+				0);
 		}
 		else {
 			std::cout << "Failed to fetch bootstrap payload, http error: " << res.error() << std::endl;
+			LogUpdateError(
+				"UF-BOOTSTRAP-HTTP",
+				"WorkThread::FetchBootstrapConfig",
+				"Bootstrap HTTP request failed",
+				std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath,
+				0,
+				0,
+				static_cast<int>(res.error()));
 		}
 		return false;
 	}
@@ -63,6 +81,12 @@ bool WorkThread::FetchBootstrapConfig()
 	Json::Reader reader;
 	if (!reader.parse(decrypted, root) || !root.isObject()) {
 		std::cout << "Bootstrap payload is not valid JSON." << std::endl;
+		SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
+		LogUpdateError(
+			"UF-BOOTSTRAP-JSON",
+			"WorkThread::FetchBootstrapConfig",
+			"Bootstrap payload parse failed",
+			"Decrypted bootstrap content is not a valid JSON object.");
 		return false;
 	}
 
@@ -72,6 +96,12 @@ bool WorkThread::FetchBootstrapConfig()
 	}
 	if (!content.isObject()) {
 		std::cout << "Bootstrap JSON missing content/download object." << std::endl;
+		SetLauncherStatus(L"Failed: malformed bootstrap content.");
+		LogUpdateError(
+			"UF-BOOTSTRAP-FIELD",
+			"WorkThread::FetchBootstrapConfig",
+			"Bootstrap JSON missing content/download object",
+			"Expected root.content or root.download object.");
 		return false;
 	}
 
@@ -81,6 +111,12 @@ bool WorkThread::FetchBootstrapConfig()
 	}
 	if (versionManifestUrl.empty()) {
 		std::cout << "Bootstrap JSON missing version_manifest_url." << std::endl;
+		SetLauncherStatus(L"Failed: missing manifest URL in bootstrap.");
+		LogUpdateError(
+			"UF-BOOTSTRAP-FIELD",
+			"WorkThread::FetchBootstrapConfig",
+			"Bootstrap JSON missing version manifest URL",
+			"Neither version_manifest_url nor version_dat_url is present.");
 		return false;
 	}
 
@@ -106,6 +142,12 @@ bool WorkThread::FetchBootstrapConfig()
 	if (versionManifestIsAbsolute) {
 		if (!ExtractBaseAndPath(versionManifestUrl, versionBaseUrl, versionPath)) {
 			std::cout << "Invalid version_manifest_url: " << versionManifestUrl << std::endl;
+			SetLauncherStatus(L"Failed: invalid manifest URL.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-URL",
+				"WorkThread::FetchBootstrapConfig",
+				"Invalid version manifest URL format",
+				std::string("version_manifest_url=") + versionManifestUrl);
 			return false;
 		}
 		m_versionState.manifestPath = versionManifestUrl;
@@ -114,6 +156,12 @@ bool WorkThread::FetchBootstrapConfig()
 	if (!updateRootUrl.empty() && IsHttpUrl(updateRootUrl)) {
 		if (!ExtractBaseAndPath(updateRootUrl, m_networkState.url, m_networkState.page)) {
 			std::cout << "Invalid update_package_root_url: " << updateRootUrl << std::endl;
+			SetLauncherStatus(L"Failed: invalid update root URL.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-URL",
+				"WorkThread::FetchBootstrapConfig",
+				"Invalid update root URL format",
+				std::string("update_package_root_url=") + updateRootUrl);
 			return false;
 		}
 	}
@@ -123,6 +171,12 @@ bool WorkThread::FetchBootstrapConfig()
 		}
 		else if (m_networkState.url.empty()) {
 			std::cout << "Relative update_package_root_url requires absolute version_manifest_url." << std::endl;
+			SetLauncherStatus(L"Failed: unresolved relative update URL.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-URL",
+				"WorkThread::FetchBootstrapConfig",
+				"Relative update root cannot be resolved",
+				"update_package_root_url is relative and version manifest URL is not absolute.");
 			return false;
 		}
 		m_networkState.page = NormalizeRelativeUrlPath(updateRootUrl);
@@ -136,6 +190,12 @@ bool WorkThread::FetchBootstrapConfig()
 	}
 	else {
 		std::cout << "Bootstrap JSON cannot resolve download host/path." << std::endl;
+		SetLauncherStatus(L"Failed: cannot resolve download host.");
+		LogUpdateError(
+			"UF-BOOTSTRAP-URL",
+			"WorkThread::FetchBootstrapConfig",
+			"Bootstrap cannot resolve download host/path",
+			"Neither update root URL nor absolute version manifest base resolved.");
 		return false;
 	}
 
@@ -164,6 +224,12 @@ bool WorkThread::FetchBootstrapConfig()
 
 	if (m_versionState.basePackageUrls.empty()) {
 		std::cout << "Bootstrap JSON missing base_package_urls/base_package_url." << std::endl;
+		SetLauncherStatus(L"Failed: missing base package URL.");
+		LogUpdateError(
+			"UF-BOOTSTRAP-FIELD",
+			"WorkThread::FetchBootstrapConfig",
+			"Bootstrap missing base package URL list",
+			"base_package_urls/base_package_url fields are empty.");
 		return false;
 	}
 
@@ -191,11 +257,13 @@ bool WorkThread::FetchBootstrapConfig()
 	std::cout << "Bootstrap resolved: host=" << m_networkState.url
 		<< " updateRoot=" << m_networkState.page
 		<< " versionPath=" << m_versionState.manifestPath << std::endl;
+	SetLauncherStatus(L"Bootstrap configuration ready.");
 	return true;
 }
 
 bool WorkThread::RefreshRemoteVersionManifest()
 {
+	SetLauncherStatus(L"Refreshing remote manifest...");
 	const std::string strVersionDatPath = m_versionState.manifestPath.empty()
 		? JoinUrlPath(m_networkState.page, "Version.dat")
 		: m_versionState.manifestPath;
@@ -279,10 +347,25 @@ bool WorkThread::RefreshRemoteVersionManifest()
 			<< ", error: " << errorCode
 			<< ", retries: " << kManifestFetchMaxAttempts
 			<< std::endl;
+		LogUpdateError(
+			"UF-MANIFEST-HTTP",
+			"WorkThread::RefreshRemoteVersionManifest",
+			"Version manifest HTTP request failed",
+			std::string("path=") + resolvedPath + ", retries=" + std::to_string(kManifestFetchMaxAttempts),
+			0,
+			res ? res->status : 0,
+			errorCode);
+		SetLauncherStatus(L"Failed: remote manifest request.");
 		return false;
 	}
 	if (res->body.empty()) {
 		std::cout << "Version.dat response body is empty, path: " << resolvedPath << std::endl;
+		LogUpdateError(
+			"UF-MANIFEST-EMPTY",
+			"WorkThread::RefreshRemoteVersionManifest",
+			"Version manifest response body is empty",
+			std::string("path=") + resolvedPath);
+		SetLauncherStatus(L"Failed: manifest content is empty.");
 		return false;
 	}
 
@@ -326,6 +409,12 @@ bool WorkThread::RefreshRemoteVersionManifest()
 	if (manifestJsonText.empty()) {
 		std::cout << "Version.dat format not supported, path: " << resolvedPath
 			<< ", body_size: " << res->body.size() << std::endl;
+		LogUpdateError(
+			"UF-MANIFEST-PARSE",
+			"WorkThread::RefreshRemoteVersionManifest",
+			"Version manifest format not supported",
+			std::string("path=") + resolvedPath + ", body_size=" + std::to_string(res->body.size()));
+		SetLauncherStatus(L"Failed: manifest format parse.");
 		return false;
 	}
 
@@ -377,5 +466,6 @@ bool WorkThread::RefreshRemoteVersionManifest()
 		}
 	}
 
+	SetLauncherStatus(L"Remote manifest refreshed.");
 	return true;
 }

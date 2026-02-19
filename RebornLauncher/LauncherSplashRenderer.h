@@ -39,6 +39,7 @@ private:
         uint64_t totalBytes{ 0 };
         int percent{ 0 };
         std::wstring fileName;
+        std::wstring statusText;
     };
 
     std::wstring GetDisplayFileName(const std::wstring& raw) const;
@@ -54,6 +55,7 @@ private:
     size_t m_animFrameIndex{ 0 };
     int m_downloadPercent{ 1 };
     int m_animPulse{ 0 };
+    std::wstring m_globalStatusText{ L"Initializing..." };
     std::vector<PigOverlayState> m_overlayPigs;
     RECT m_overlayBoundsScreen{};
     bool m_followingGameWindows{ false };

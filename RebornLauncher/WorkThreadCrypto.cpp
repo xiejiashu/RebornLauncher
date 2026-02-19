@@ -10,7 +10,14 @@
 #pragma comment(lib, "advapi32.lib")
 
 void WorkThread::HandleError(const char* msg) {
-	std::cerr << msg << " Error: " << GetLastError() << std::endl;
+	const DWORD lastError = GetLastError();
+	std::cerr << msg << " Error: " << lastError << std::endl;
+	LogUpdateError(
+		"UF-CRYPTO-API",
+		"WorkThread::HandleError",
+		msg ? msg : "Crypto API failure",
+		"Fatal crypto error, process will exit.",
+		lastError);
 	exit(1);
 }
 
@@ -70,18 +77,33 @@ std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 	if (decompressBound == ZSTD_CONTENTSIZE_ERROR || decompressBound == ZSTD_CONTENTSIZE_UNKNOWN || decompressBound == 0 ||
 		decompressBound > (64ULL * 1024ULL * 1024ULL)) {
 		std::cout << "Invalid Version.dat payload size: " << decompressBound << std::endl;
+		LogUpdateError(
+			"UF-MANIFEST-DECOMPRESS",
+			"WorkThread::DecryptVersionDat",
+			"Invalid Version.dat compressed payload size",
+			std::string("size=") + std::to_string(static_cast<unsigned long long>(decompressBound)));
 		return {};
 	}
 
 	const std::string strDict = "D2Qbzy7hnmLh1zqgmDKx";
 	ZSTD_DDict* ddict = ZSTD_createDDict(strDict.data(), strDict.size());
 	if (!ddict) {
+		LogUpdateError(
+			"UF-MANIFEST-DECOMPRESS",
+			"WorkThread::DecryptVersionDat",
+			"Failed to create ZSTD dictionary",
+			"ZSTD_createDDict returned null.");
 		return {};
 	}
 
 	ZSTD_DCtx* dctx = ZSTD_createDCtx();
 	if (!dctx) {
 		ZSTD_freeDDict(ddict);
+		LogUpdateError(
+			"UF-MANIFEST-DECOMPRESS",
+			"WorkThread::DecryptVersionDat",
+			"Failed to create ZSTD decompression context",
+			"ZSTD_createDCtx returned null.");
 		return {};
 	}
 
@@ -95,6 +117,11 @@ std::string WorkThread::DecryptVersionDat(const std::string& ciphertext)
 
 	if (ZSTD_isError(decompressSize) != 0) {
 		std::cout << "Failed to decompress Version.dat: " << ZSTD_getErrorName(decompressSize) << std::endl;
+		LogUpdateError(
+			"UF-MANIFEST-DECOMPRESS",
+			"WorkThread::DecryptVersionDat",
+			"Failed to decompress Version.dat",
+			std::string("zstd_error=") + ZSTD_getErrorName(decompressSize));
 		return {};
 	}
 

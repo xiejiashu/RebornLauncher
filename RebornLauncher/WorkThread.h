@@ -1,9 +1,15 @@
 #include "VersionConfig.h"
 #include "P2PClient.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace httplib
@@ -104,6 +110,8 @@ public:
 	int GetCurrentDownloadSize() const;
 	int GetCurrentDownloadProgress() const;
 	std::vector<tagGameInfo> GetGameInfosSnapshot() const;
+	void SetLauncherStatus(const std::wstring& status);
+	std::wstring GetLauncherStatus() const;
 
 	bool DownloadBasePackage();
 
@@ -132,6 +140,14 @@ public:
 
 	void UpdateP2PSettings(const P2PSettings& settings);
 	P2PSettings GetP2PSettings() const;
+	void LogUpdateError(
+		const char* code,
+		const char* source,
+		const std::string& reason,
+		const std::string& details = {},
+		DWORD systemError = 0,
+		int httpStatus = 0,
+		int httpError = 0) const;
 private:
 	bool InitializeDownloadEnvironment();
 	bool EnsureBasePackageReady();
@@ -150,6 +166,8 @@ private:
 	void CleanupExitedGameInfos();
 	bool HasRunningGameProcess();
 	void TerminateAllGameProcesses();
+	std::filesystem::path GetUpdateLogFilePath() const;
+	std::string FormatSystemError(DWORD errorCode) const;
 	friend class workthread::runflow::WorkThreadRunCoordinator;
 	friend class workthread::runtimeupdate::WorkThreadRuntimeUpdater;
 	friend class workthread::versionload::WorkThreadLocalVersionLoader;
@@ -163,4 +181,143 @@ private:
 	DownloadProgressState m_downloadState;
 
 	SelfUpdateState m_selfUpdateState;
+	std::wstring m_launcherStatus{ L"Initializing launcher..." };
+	mutable std::mutex m_statusMutex;
+	mutable std::mutex m_logMutex;
+	std::mutex m_launchFlowMutex;
 };
+
+namespace workthread::loggingdetail {
+
+inline std::string BuildLocalTimestamp() {
+	SYSTEMTIME st{};
+	GetLocalTime(&st);
+	char buffer[64]{};
+	sprintf_s(
+		buffer,
+		sizeof(buffer),
+		"%04u-%02u-%02u %02u:%02u:%02u.%03u",
+		static_cast<unsigned>(st.wYear),
+		static_cast<unsigned>(st.wMonth),
+		static_cast<unsigned>(st.wDay),
+		static_cast<unsigned>(st.wHour),
+		static_cast<unsigned>(st.wMinute),
+		static_cast<unsigned>(st.wSecond),
+		static_cast<unsigned>(st.wMilliseconds));
+	return buffer;
+}
+
+inline std::string BuildDateStamp() {
+	SYSTEMTIME st{};
+	GetLocalTime(&st);
+	char buffer[32]{};
+	sprintf_s(
+		buffer,
+		sizeof(buffer),
+		"%04u-%02u-%02u",
+		static_cast<unsigned>(st.wYear),
+		static_cast<unsigned>(st.wMonth),
+		static_cast<unsigned>(st.wDay));
+	return buffer;
+}
+
+inline std::string SanitizeForLog(const std::string& value) {
+	std::string sanitized = value;
+	for (char& ch : sanitized) {
+		if (ch == '\r' || ch == '\n' || ch == '\t') {
+			ch = ' ';
+		}
+	}
+	return sanitized;
+}
+
+} // namespace workthread::loggingdetail
+
+inline std::filesystem::path WorkThread::GetUpdateLogFilePath() const {
+	std::error_code ec;
+	std::filesystem::path baseDir = std::filesystem::current_path(ec);
+	if (ec) {
+		baseDir = std::filesystem::path(".");
+	}
+	std::filesystem::path logDir = baseDir / "Logs";
+	std::filesystem::create_directories(logDir, ec);
+	const std::string fileName = "update-" + workthread::loggingdetail::BuildDateStamp() + ".log";
+	return logDir / std::filesystem::u8path(fileName);
+}
+
+inline std::string WorkThread::FormatSystemError(DWORD errorCode) const {
+	if (errorCode == 0) {
+		return {};
+	}
+
+	LPSTR messageBuffer = nullptr;
+	const DWORD size = FormatMessageA(
+		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+		nullptr,
+		errorCode,
+		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		reinterpret_cast<LPSTR>(&messageBuffer),
+		0,
+		nullptr);
+
+	std::string message;
+	if (size > 0 && messageBuffer != nullptr) {
+		message.assign(messageBuffer, size);
+		LocalFree(messageBuffer);
+	}
+
+	while (!message.empty() && std::isspace(static_cast<unsigned char>(message.back())) != 0) {
+		message.pop_back();
+	}
+	return workthread::loggingdetail::SanitizeForLog(message);
+}
+
+inline void WorkThread::LogUpdateError(
+	const char* code,
+	const char* source,
+	const std::string& reason,
+	const std::string& details,
+	DWORD systemError,
+	int httpStatus,
+	int httpError) const {
+	std::lock_guard<std::mutex> lock(m_logMutex);
+	const std::filesystem::path logPath = GetUpdateLogFilePath();
+	std::ofstream stream(logPath, std::ios::binary | std::ios::app);
+	if (!stream.is_open()) {
+		return;
+	}
+
+	stream << "[" << workthread::loggingdetail::BuildLocalTimestamp() << "] "
+		<< "level=ERROR "
+		<< "code=" << (code ? code : "UF-UNKNOWN") << " "
+		<< "source=\"" << workthread::loggingdetail::SanitizeForLog(source ? source : "unknown") << "\" "
+		<< "reason=\"" << workthread::loggingdetail::SanitizeForLog(reason) << "\"";
+
+	if (!details.empty()) {
+		stream << " details=\"" << workthread::loggingdetail::SanitizeForLog(details) << "\"";
+	}
+	if (systemError != 0) {
+		stream << " win32_code=" << systemError;
+		const std::string systemMessage = FormatSystemError(systemError);
+		if (!systemMessage.empty()) {
+			stream << " win32_message=\"" << systemMessage << "\"";
+		}
+	}
+	if (httpStatus != 0) {
+		stream << " http_status=" << httpStatus;
+	}
+	if (httpError != 0) {
+		stream << " http_error=" << httpError;
+	}
+	stream << std::endl;
+}
+
+inline void WorkThread::SetLauncherStatus(const std::wstring& status) {
+	std::lock_guard<std::mutex> lock(m_statusMutex);
+	m_launcherStatus = status;
+}
+
+inline std::wstring WorkThread::GetLauncherStatus() const {
+	std::lock_guard<std::mutex> lock(m_statusMutex);
+	return m_launcherStatus;
+}

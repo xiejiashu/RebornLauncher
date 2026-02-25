@@ -20,3 +20,4 @@ PowerShell HTTP response probe assumed string content and called `Substring` on 
 
 Used unsupported httplib::Server::set_reuse_addr API -> assumed installed httplib exposed that method -> compile immediately after server-thread edits and only use APIs verified in this tree.
 Deleted a newly added source file and assumed project regeneration would drop it immediately -> stale/generated VS target still referenced missing source -> verify generated vcxproj source entries after add/remove and keep temporary stub until clean reconfigure.
+Dock animation refactor used std::max with mixed LONG and int types -> implicit type mismatch in template deduction -> cast Win32 RECT diffs to int before calling std::max.

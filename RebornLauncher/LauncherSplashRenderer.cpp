@@ -134,27 +134,89 @@ void LauncherSplashRenderer::EnsureAnimationFramesLoaded() {
     LoadAnimationFramesFromResources();
 }
 
-HWND LauncherSplashRenderer::FindTopTrackedGameWindow(const std::vector<PigOverlayState>& overlays) const {
-    std::vector<HWND> tracked;
-    tracked.reserve(overlays.size());
-    for (const auto& pig : overlays) {
-        if (pig.gameWindow && IsWindow(pig.gameWindow) && IsWindowVisible(pig.gameWindow)) {
-            tracked.push_back(pig.gameWindow);
-        }
-    }
-    if (tracked.empty()) {
-        return nullptr;
+POINT LauncherSplashRenderer::ComputeDockTargetPos(HWND hWnd) const {
+    RECT workArea{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        workArea.left = 0;
+        workArea.top = 0;
+        workArea.right = GetSystemMetrics(SM_CXSCREEN);
+        workArea.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
-    for (HWND z = GetTopWindow(nullptr); z != nullptr; z = GetWindow(z, GW_HWNDNEXT)) {
-        if (!IsWindowVisible(z)) {
-            continue;
-        }
-        if (std::find(tracked.begin(), tracked.end(), z) != tracked.end()) {
-            return z;
+    RECT wndRect{};
+    GetWindowRect(hWnd, &wndRect);
+    const int wndWRaw = static_cast<int>(wndRect.right - wndRect.left);
+    const int wndHRaw = static_cast<int>(wndRect.bottom - wndRect.top);
+    const int wndW = (std::max)(1, wndWRaw);
+    const int wndH = (std::max)(1, wndHRaw);
+    constexpr int kDockMarginX = 8;
+    constexpr int kDockMarginY = 8;
+    POINT target{};
+    target.x = workArea.right - wndW - kDockMarginX;
+    target.y = workArea.bottom - wndH - kDockMarginY;
+    return target;
+}
+
+void LauncherSplashRenderer::UpdateDockAnimation(HWND hWnd) {
+    if (!hWnd) {
+        return;
+    }
+
+    RECT wndRect{};
+    if (!GetWindowRect(hWnd, &wndRect)) {
+        return;
+    }
+
+    if (!m_dockAnimationStarted) {
+        m_dockAnimationStarted = true;
+        m_dockAnimationFinished = false;
+        m_dockAnimationStartTick = GetTickCount64();
+        m_dockStartPos.x = wndRect.left;
+        m_dockStartPos.y = wndRect.top;
+        m_dockTargetPos = ComputeDockTargetPos(hWnd);
+    }
+
+    const POINT latestTarget = ComputeDockTargetPos(hWnd);
+    if (latestTarget.x != m_dockTargetPos.x || latestTarget.y != m_dockTargetPos.y) {
+        m_dockTargetPos = latestTarget;
+        if (m_dockAnimationFinished) {
+            m_dockStartPos.x = wndRect.left;
+            m_dockStartPos.y = wndRect.top;
+            m_dockAnimationStartTick = GetTickCount64();
+            m_dockAnimationFinished = false;
         }
     }
-    return tracked.front();
+
+    int newX = m_dockTargetPos.x;
+    int newY = m_dockTargetPos.y;
+    if (!m_dockAnimationFinished) {
+        const ULONGLONG now = GetTickCount64();
+        constexpr double kAnimMs = 900.0;
+        double t = static_cast<double>(now - m_dockAnimationStartTick) / kAnimMs;
+        t = (std::max)(0.0, (std::min)(1.0, t));
+        const double eased = 1.0 - std::pow(1.0 - t, 3.0);
+        newX = static_cast<int>(std::round(
+            static_cast<double>(m_dockStartPos.x) + static_cast<double>(m_dockTargetPos.x - m_dockStartPos.x) * eased));
+        newY = static_cast<int>(std::round(
+            static_cast<double>(m_dockStartPos.y) + static_cast<double>(m_dockTargetPos.y - m_dockStartPos.y) * eased));
+        if (t >= 1.0) {
+            m_dockAnimationFinished = true;
+        }
+    }
+
+    SetWindowPos(
+        hWnd,
+        HWND_TOPMOST,
+        newX,
+        newY,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    if (m_savedWindowPos) {
+        m_savedWindowPos->x = newX;
+        m_savedWindowPos->y = newY;
+    }
 }
 
 void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, WorkThread& workThread) {
@@ -162,113 +224,10 @@ void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, WorkThread& workThre
         return;
     }
 
-    const std::wstring globalStatus = FitStatusLabel(workThread.GetLauncherStatus(), 56);
-    m_globalStatusText = globalStatus;
-    const std::wstring globalFileRaw = workThread.GetCurrentDownloadFile();
-    const std::wstring globalFileName = GetDisplayFileName(globalFileRaw);
-    const int globalTotal = workThread.GetCurrentDownloadSize();
-    const int globalProgress = workThread.GetCurrentDownloadProgress();
-    const bool globalDownloading = !globalFileName.empty() && globalTotal > 0 && globalProgress >= 0 && globalProgress < globalTotal;
-
-    auto gameInfos = workThread.GetGameInfosSnapshot();
-    std::vector<PigOverlayState> overlays;
-    overlays.reserve(gameInfos.size());
-
-    RECT bounds{};
-    bool hasBounds = false;
-    for (const auto& info : gameInfos) {
-        if (info.dwProcessId == 0 || info.hMainWnd == nullptr || !IsWindow(info.hMainWnd)) {
-            continue;
-        }
-        RECT gameRect{};
-        if (!GetWindowRect(info.hMainWnd, &gameRect)) {
-            continue;
-        }
-        const int gameWidth = gameRect.right - gameRect.left;
-        const int gameHeight = gameRect.bottom - gameRect.top;
-        if (gameWidth <= 0 || gameHeight <= 0) {
-            continue;
-        }
-
-        PigOverlayState state;
-        state.processId = info.dwProcessId;
-        state.gameWindow = info.hMainWnd;
-        state.gameRect = gameRect;
-        state.downloading = info.downloading;
-        state.downloadedBytes = info.downloadDoneBytes;
-        state.totalBytes = info.downloadTotalBytes;
-        state.fileName = GetDisplayFileName(info.downloadFile);
-        state.statusText = globalStatus;
-        if (state.downloading && state.fileName.empty() && !globalFileName.empty()) {
-            state.fileName = globalFileName;
-        }
-        if (state.downloading && state.totalBytes == 0 && globalTotal > 0) {
-            state.totalBytes = static_cast<uint64_t>(globalTotal);
-            state.downloadedBytes = static_cast<uint64_t>((std::max)(0, globalProgress));
-        }
-        if (!state.downloading && globalDownloading) {
-            state.downloading = true;
-            state.fileName = globalFileName;
-            state.totalBytes = static_cast<uint64_t>(globalTotal);
-            state.downloadedBytes = static_cast<uint64_t>((std::max)(0, globalProgress));
-        }
-        if (state.totalBytes > 0) {
-            state.percent = static_cast<int>(std::round(
-                static_cast<double>((std::min)(state.downloadedBytes, state.totalBytes)) * 100.0 /
-                static_cast<double>(state.totalBytes)));
-        }
-        state.percent = (std::max)(0, (std::min)(100, state.percent));
-        overlays.push_back(std::move(state));
-
-        RECT drawArea{};
-        drawArea.left = gameRect.left;
-        drawArea.right = gameRect.right;
-        drawArea.top = gameRect.top - 96;
-        drawArea.bottom = gameRect.top - 4;
-        if (!hasBounds) {
-            bounds = drawArea;
-            hasBounds = true;
-        } else {
-            bounds.left = (std::min)(bounds.left, drawArea.left);
-            bounds.top = (std::min)(bounds.top, drawArea.top);
-            bounds.right = (std::max)(bounds.right, drawArea.right);
-            bounds.bottom = (std::max)(bounds.bottom, drawArea.bottom);
-        }
-    }
-
-    m_overlayPigs = std::move(overlays);
-    if (hasBounds) {
-        const int margin = 6;
-        bounds.left -= margin;
-        bounds.top -= margin;
-        bounds.right += margin;
-        bounds.bottom += 2;
-        m_overlayBoundsScreen = bounds;
-        const int rawW = static_cast<int>(m_overlayBoundsScreen.right - m_overlayBoundsScreen.left);
-        const int rawH = static_cast<int>(m_overlayBoundsScreen.bottom - m_overlayBoundsScreen.top);
-        const int overlayW = (std::max)(1, rawW);
-        const int overlayH = (std::max)(1, rawH);
-        HWND anchorGame = FindTopTrackedGameWindow(m_overlayPigs);
-        SetWindowPos(hWnd, anchorGame ? anchorGame : HWND_NOTOPMOST,
-                     m_overlayBoundsScreen.left, m_overlayBoundsScreen.top,
-                     overlayW, overlayH,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        m_followingGameWindows = true;
-        m_idleTopmost = false;
-    } else {
-        if (m_followingGameWindows) {
-            m_overlayPigs.clear();
-            m_overlayBoundsScreen = {};
-            m_followingGameWindows = false;
-        }
-        if (!m_idleTopmost && m_savedWindowPos && m_defaultWindowSize) {
-            SetWindowPos(hWnd, HWND_TOPMOST,
-                         m_savedWindowPos->x, m_savedWindowPos->y,
-                         m_defaultWindowSize->cx, m_defaultWindowSize->cy,
-                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            m_idleTopmost = true;
-        }
-    }
+    m_globalStatusText = FitStatusLabel(workThread.GetLauncherStatus(), 54);
+    m_globalFileText = GetDisplayFileName(workThread.GetCurrentDownloadFile());
+    m_followingGameWindows = false;
+    UpdateDockAnimation(hWnd);
 }
 
 void LauncherSplashRenderer::DrawFallbackPulse(Gdiplus::Graphics& graphics, int width, int height) const {
@@ -304,124 +263,69 @@ void LauncherSplashRenderer::DrawScene(HWND hWnd, HDC hdc) {
     graphics.Clear(Gdiplus::Color(255, 1, 1, 1));
 
     EnsureAnimationFramesLoaded();
-    if (m_followingGameWindows && !m_overlayPigs.empty()) {
-        Gdiplus::SolidBrush labelShadow(Gdiplus::Color(120, 0, 0, 0));
-        Gdiplus::SolidBrush labelText(Gdiplus::Color(248, 255, 255, 255));
-        Gdiplus::FontFamily fontFamily(L"Segoe UI");
-        Gdiplus::Font labelFont(&fontFamily, 14.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::StringFormat centerFormat;
-        centerFormat.SetAlignment(Gdiplus::StringAlignmentCenter);
-        centerFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-
-        for (const auto& pig : m_overlayPigs) {
-            const int gameWidth = pig.gameRect.right - pig.gameRect.left;
-            if (gameWidth <= 0) {
-                continue;
-            }
-            auto toLocalX = [&](LONG x) {
-                return static_cast<int>(x - m_overlayBoundsScreen.left);
-            };
-            auto toLocalY = [&](LONG y) {
-                return static_cast<int>(y - m_overlayBoundsScreen.top);
-            };
-
-            int drawW = 54;
-            int drawH = 42;
-            if (!m_animFrames.empty()) {
-                auto* frame = m_animFrames[m_animFrameIndex % m_animFrames.size()].get();
-                const double scale = static_cast<double>(drawH) / static_cast<double>((std::max<UINT>)(1, frame->GetHeight()));
-                drawW = static_cast<int>(frame->GetWidth() * scale);
-            }
-
-            const int runwayPadding = 10;
-            const int runwayLeft = toLocalX(pig.gameRect.left + runwayPadding);
-            int runwayRight = toLocalX(pig.gameRect.right - runwayPadding) - drawW;
-            if (runwayRight < runwayLeft) {
-                runwayRight = runwayLeft;
-            }
-            const double t = pig.downloading
-                ? (std::max)(0.0, (std::min)(1.0, static_cast<double>(pig.percent) / 100.0))
-                : 0.0;
-            const int drawX = runwayLeft + static_cast<int>(std::round((runwayRight - runwayLeft) * t));
-            const int drawY = toLocalY(pig.gameRect.top - drawH - 6);
-
-            if (!m_animFrames.empty()) {
-                auto* frame = m_animFrames[m_animFrameIndex % m_animFrames.size()].get();
-                graphics.DrawImage(frame, drawX, drawY, drawW, drawH);
-            } else {
-                const int fallbackCx = drawX + drawW / 2;
-                const int fallbackCy = drawY + drawH / 2;
-                Gdiplus::SolidBrush fallbackBrush(Gdiplus::Color(210, 255, 220, 150));
-                graphics.FillEllipse(&fallbackBrush, fallbackCx - 20, fallbackCy - 20, 40, 40);
-            }
-
-            std::wstring label = FitStatusLabel(pig.statusText, 42);
-            if (pig.downloading) {
-                std::wstring progressLabel = (pig.fileName.empty() ? L"updating" : pig.fileName);
-                progressLabel += L" " + std::to_wstring(pig.percent) + L"%";
-                label += L" | " + progressLabel;
-            }
-            const float labelW = static_cast<float>((std::max)(180, (std::min)(gameWidth - 24, 520)));
-            float labelX = static_cast<float>(drawX + drawW / 2) - labelW * 0.5f;
-            labelX = (std::max)(0.0f, (std::min)(static_cast<float>(width) - labelW, labelX));
-            const float labelY = static_cast<float>((std::max)(2, drawY - 26));
-            Gdiplus::RectF labelRect(labelX, labelY, labelW, 22.0f);
-            Gdiplus::RectF shadowRect = labelRect;
-            shadowRect.X += 1.0f;
-            shadowRect.Y += 1.0f;
-            graphics.DrawString(label.c_str(), -1, &labelFont, shadowRect, &centerFormat, &labelShadow);
-            graphics.DrawString(label.c_str(), -1, &labelFont, labelRect, &centerFormat, &labelText);
-        }
+    int pigCenterX = width / 2;
+    int pigTopY = (std::max)(0, height / 2 - 24);
+    if (!m_animFrames.empty()) {
+        auto* frame = m_animFrames[m_animFrameIndex % m_animFrames.size()].get();
+        const double sx = static_cast<double>(width) * 0.36 / (std::max<UINT>)(1, frame->GetWidth());
+        const double sy = static_cast<double>(height) * 0.54 / (std::max<UINT>)(1, frame->GetHeight());
+        const double scale = (std::max)(0.2, (std::min)(sx, sy));
+        const int drawW = static_cast<int>(frame->GetWidth() * scale);
+        const int drawH = static_cast<int>(frame->GetHeight() * scale);
+        const int drawX = (width - drawW) / 2;
+        const int drawY = (height - drawH) / 2 - 20;
+        graphics.DrawImage(frame, drawX, drawY, drawW, drawH);
+        pigCenterX = drawX + drawW / 2;
+        pigTopY = drawY;
     } else {
-        int pigCenterX = width / 2;
-        int pigTopY = (std::max)(0, height / 2 - 24);
-        if (!m_animFrames.empty()) {
-            auto* frame = m_animFrames[m_animFrameIndex % m_animFrames.size()].get();
-            const double sx = static_cast<double>(width) * 0.36 / (std::max<UINT>)(1, frame->GetWidth());
-            const double sy = static_cast<double>(height) * 0.54 / (std::max<UINT>)(1, frame->GetHeight());
-            const double scale = (std::max)(0.2, (std::min)(sx, sy));
-            const int drawW = static_cast<int>(frame->GetWidth() * scale);
-            const int drawH = static_cast<int>(frame->GetHeight() * scale);
-            const int drawX = (width - drawW) / 2;
-            const int drawY = (height - drawH) / 2 - 20;
-            graphics.DrawImage(frame, drawX, drawY, drawW, drawH);
-            pigCenterX = drawX + drawW / 2;
-            pigTopY = drawY;
-        } else {
-            DrawFallbackPulse(graphics, width, height);
-        }
+        DrawFallbackPulse(graphics, width, height);
+    }
 
-        const int percent = (std::max)(1, (std::min)(100, m_downloadPercent));
-        const std::wstring percentText = std::to_wstring(percent) + L"%";
-        Gdiplus::FontFamily fontFamily(L"Segoe UI");
-        Gdiplus::Font percentFont(&fontFamily, 38.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::StringFormat format;
-        format.SetAlignment(Gdiplus::StringAlignmentCenter);
-        format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-        const float percentBoxW = 180.0f;
-        const float percentX = (std::max)(0.0f, (std::min)(static_cast<float>(width) - percentBoxW, static_cast<float>(pigCenterX) - percentBoxW * 0.5f));
-        const float percentY = (std::max)(6.0f, static_cast<float>(pigTopY - 56));
-        Gdiplus::RectF textRect(percentX, percentY, percentBoxW, 56.0f);
-        Gdiplus::SolidBrush shadowBrush(Gdiplus::Color(140, 0, 0, 0));
-        Gdiplus::SolidBrush textBrush(Gdiplus::Color(250, 255, 255, 255));
-        Gdiplus::RectF shadowRect = textRect;
-        shadowRect.X += 2.0f;
-        shadowRect.Y += 2.0f;
-        graphics.DrawString(percentText.c_str(), -1, &percentFont, shadowRect, &format, &shadowBrush);
-        graphics.DrawString(percentText.c_str(), -1, &percentFont, textRect, &format, &textBrush);
+    const int percent = (std::max)(1, (std::min)(100, m_downloadPercent));
+    const std::wstring percentText = std::to_wstring(percent) + L"%";
+    Gdiplus::FontFamily fontFamily(L"Segoe UI");
+    Gdiplus::Font percentFont(&fontFamily, 38.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    Gdiplus::StringFormat format;
+    format.SetAlignment(Gdiplus::StringAlignmentCenter);
+    format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    const float percentBoxW = 180.0f;
+    const float percentX = (std::max)(0.0f, (std::min)(static_cast<float>(width) - percentBoxW, static_cast<float>(pigCenterX) - percentBoxW * 0.5f));
+    const float percentY = (std::max)(6.0f, static_cast<float>(pigTopY - 56));
+    Gdiplus::RectF textRect(percentX, percentY, percentBoxW, 56.0f);
+    Gdiplus::SolidBrush shadowBrush(Gdiplus::Color(140, 0, 0, 0));
+    Gdiplus::SolidBrush textBrush(Gdiplus::Color(250, 255, 255, 255));
+    Gdiplus::RectF shadowRect = textRect;
+    shadowRect.X += 2.0f;
+    shadowRect.Y += 2.0f;
+    graphics.DrawString(percentText.c_str(), -1, &percentFont, shadowRect, &format, &shadowBrush);
+    graphics.DrawString(percentText.c_str(), -1, &percentFont, textRect, &format, &textBrush);
 
-        Gdiplus::Font statusFont(&fontFamily, 14.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::RectF statusRect(
+    Gdiplus::Font statusFont(&fontFamily, 14.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    Gdiplus::RectF statusRect(
+        static_cast<float>((std::max)(0, pigCenterX - 210)),
+        percentY + 58.0f,
+        420.0f,
+        26.0f);
+    Gdiplus::RectF statusShadow = statusRect;
+    statusShadow.X += 1.0f;
+    statusShadow.Y += 1.0f;
+    const std::wstring idleStatus = FitStatusLabel(m_globalStatusText, 54);
+    graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusShadow, &format, &shadowBrush);
+    graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusRect, &format, &textBrush);
+
+    if (!m_globalFileText.empty()) {
+        Gdiplus::Font fileFont(&fontFamily, 12.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        const std::wstring fileText = FitStatusLabel(m_globalFileText, 46);
+        Gdiplus::RectF fileRect(
             static_cast<float>((std::max)(0, pigCenterX - 210)),
-            percentY + 58.0f,
+            percentY + 84.0f,
             420.0f,
-            26.0f);
-        Gdiplus::RectF statusShadow = statusRect;
-        statusShadow.X += 1.0f;
-        statusShadow.Y += 1.0f;
-        const std::wstring idleStatus = FitStatusLabel(m_globalStatusText, 54);
-        graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusShadow, &format, &shadowBrush);
-        graphics.DrawString(idleStatus.c_str(), -1, &statusFont, statusRect, &format, &textBrush);
+            22.0f);
+        Gdiplus::RectF fileShadow = fileRect;
+        fileShadow.X += 1.0f;
+        fileShadow.Y += 1.0f;
+        graphics.DrawString(fileText.c_str(), -1, &fileFont, fileShadow, &format, &shadowBrush);
+        graphics.DrawString(fileText.c_str(), -1, &fileFont, fileRect, &format, &textBrush);
     }
 
     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
@@ -435,6 +339,7 @@ void LauncherSplashRenderer::OnTimerTick(HWND hWnd) {
         m_animFrameIndex = (m_animFrameIndex + 1) % m_animFrames.size();
     }
     m_animPulse = (m_animPulse + 1) % 24;
+    UpdateDockAnimation(hWnd);
     InvalidateRect(hWnd, nullptr, FALSE);
 }
 

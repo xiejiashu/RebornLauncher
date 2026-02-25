@@ -30,23 +30,12 @@ public:
     int GetDownloadPercent() const;
 
 private:
-    struct PigOverlayState {
-        DWORD processId{ 0 };
-        HWND gameWindow{ nullptr };
-        RECT gameRect{};
-        bool downloading{ false };
-        uint64_t downloadedBytes{ 0 };
-        uint64_t totalBytes{ 0 };
-        int percent{ 0 };
-        std::wstring fileName;
-        std::wstring statusText;
-    };
-
     std::wstring GetDisplayFileName(const std::wstring& raw) const;
     std::unique_ptr<Gdiplus::Bitmap> LoadPngFromResource(UINT resId) const;
     bool LoadAnimationFramesFromResources();
-    HWND FindTopTrackedGameWindow(const std::vector<PigOverlayState>& overlays) const;
     void DrawFallbackPulse(Gdiplus::Graphics& graphics, int width, int height) const;
+    POINT ComputeDockTargetPos(HWND hWnd) const;
+    void UpdateDockAnimation(HWND hWnd);
 
     HINSTANCE m_hInstance{ nullptr };
     POINT* m_savedWindowPos{ nullptr };
@@ -56,8 +45,11 @@ private:
     int m_downloadPercent{ 1 };
     int m_animPulse{ 0 };
     std::wstring m_globalStatusText{ L"Initializing..." };
-    std::vector<PigOverlayState> m_overlayPigs;
-    RECT m_overlayBoundsScreen{};
+    std::wstring m_globalFileText;
+    bool m_dockAnimationStarted{ false };
+    bool m_dockAnimationFinished{ false };
+    ULONGLONG m_dockAnimationStartTick{ 0 };
+    POINT m_dockStartPos{};
+    POINT m_dockTargetPos{};
     bool m_followingGameWindows{ false };
-    bool m_idleTopmost{ false };
 };

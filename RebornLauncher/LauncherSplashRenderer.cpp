@@ -17,7 +17,7 @@ namespace {
 
 std::wstring FitStatusLabel(const std::wstring& raw, size_t maxChars) {
     if (raw.empty()) {
-        return L"Working...";
+        return L"\u5904\u7406\u4e2d...";
     }
     if (raw.size() <= maxChars) {
         return raw;
@@ -157,8 +157,31 @@ POINT LauncherSplashRenderer::ComputeDockTargetPos(HWND hWnd) const {
     return target;
 }
 
+void LauncherSplashRenderer::RestartDockToCorner() {
+    m_hasDockTargetOverride = false;
+    m_dockToCornerEnabled = true;
+    m_dockAnimationStarted = false;
+    m_dockAnimationFinished = false;
+    m_dockAnimationStartTick = 0;
+}
+
+void LauncherSplashRenderer::RestartDockToPosition(const POINT& target) {
+    m_dockTargetOverride = target;
+    m_hasDockTargetOverride = true;
+    m_dockToCornerEnabled = true;
+    m_dockAnimationStarted = false;
+    m_dockAnimationFinished = false;
+    m_dockAnimationStartTick = 0;
+}
+
+void LauncherSplashRenderer::CancelDockToCorner() {
+    m_dockToCornerEnabled = false;
+    m_dockAnimationStarted = false;
+    m_dockAnimationFinished = true;
+}
+
 void LauncherSplashRenderer::UpdateDockAnimation(HWND hWnd) {
-    if (!hWnd) {
+    if (!hWnd || !m_dockToCornerEnabled || !IsWindowVisible(hWnd)) {
         return;
     }
 
@@ -167,16 +190,19 @@ void LauncherSplashRenderer::UpdateDockAnimation(HWND hWnd) {
         return;
     }
 
+    const POINT latestTarget = m_hasDockTargetOverride
+        ? m_dockTargetOverride
+        : ComputeDockTargetPos(hWnd);
+
     if (!m_dockAnimationStarted) {
         m_dockAnimationStarted = true;
         m_dockAnimationFinished = false;
         m_dockAnimationStartTick = GetTickCount64();
         m_dockStartPos.x = wndRect.left;
         m_dockStartPos.y = wndRect.top;
-        m_dockTargetPos = ComputeDockTargetPos(hWnd);
+        m_dockTargetPos = latestTarget;
     }
 
-    const POINT latestTarget = ComputeDockTargetPos(hWnd);
     if (latestTarget.x != m_dockTargetPos.x || latestTarget.y != m_dockTargetPos.y) {
         m_dockTargetPos = latestTarget;
         if (m_dockAnimationFinished) {
@@ -206,16 +232,21 @@ void LauncherSplashRenderer::UpdateDockAnimation(HWND hWnd) {
 
     SetWindowPos(
         hWnd,
-        HWND_TOPMOST,
+        nullptr,
         newX,
         newY,
         0,
         0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
 
     if (m_savedWindowPos) {
         m_savedWindowPos->x = newX;
         m_savedWindowPos->y = newY;
+    }
+
+    if (m_dockAnimationFinished) {
+        m_dockToCornerEnabled = false;
+        m_hasDockTargetOverride = false;
     }
 }
 

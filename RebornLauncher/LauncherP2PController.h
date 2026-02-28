@@ -54,7 +54,7 @@ private:
     P2PSettings m_p2pSettings;
     std::wstring m_currentModulePath;
     std::wstring m_workPath;
-    std::wstring m_animStatusText{ L"Updating resources..." };
+    std::wstring m_animStatusText{ L"\u66f4\u65b0\u8d44\u6e90\u4e2d..." };
     WorkThread* m_workThreadPtr{ nullptr };
     HINSTANCE m_hInst{ nullptr };
     static constexpr const wchar_t* kStunListFile = L"p2p_stun_servers.txt";

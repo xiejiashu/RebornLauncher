@@ -28,6 +28,9 @@ public:
     void SetDownloadPercent(HWND hWnd, int percent);
     bool IsFollowingGameWindows() const;
     int GetDownloadPercent() const;
+    void RestartDockToCorner();
+    void RestartDockToPosition(const POINT& target);
+    void CancelDockToCorner();
 
 private:
     std::wstring GetDisplayFileName(const std::wstring& raw) const;
@@ -44,12 +47,15 @@ private:
     size_t m_animFrameIndex{ 0 };
     int m_downloadPercent{ 1 };
     int m_animPulse{ 0 };
-    std::wstring m_globalStatusText{ L"Initializing..." };
+    std::wstring m_globalStatusText{ L"\u521d\u59cb\u5316\u4e2d..." };
     std::wstring m_globalFileText;
     bool m_dockAnimationStarted{ false };
     bool m_dockAnimationFinished{ false };
     ULONGLONG m_dockAnimationStartTick{ 0 };
     POINT m_dockStartPos{};
     POINT m_dockTargetPos{};
+    POINT m_dockTargetOverride{};
     bool m_followingGameWindows{ false };
+    bool m_dockToCornerEnabled{ true };
+    bool m_hasDockTargetOverride{ false };
 };

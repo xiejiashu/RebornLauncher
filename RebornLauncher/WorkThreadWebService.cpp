@@ -118,7 +118,6 @@ void WorkThread::WebServiceThread()
 			g_bRendering = true;
 			m_downloadState.totalDownload = 1;
 			m_downloadState.currentDownload = 0;
-			PostMessage(m_runtimeState.mainWnd, WM_DELETE_TRAY, 0, 0);
 		}
 
 		auto it = ResolveFileConfigByPage(m_versionState.files, strPage);
@@ -149,6 +148,9 @@ void WorkThread::WebServiceThread()
 			requestPid,
 			0,
 			static_cast<uint64_t>((std::max)(0, m_downloadState.currentDownloadSize)));
+		if (!isAsync) {
+			PostMessage(m_runtimeState.mainWnd, WM_SHOW_FOR_DOWNLOAD, 0, 0);
+		}
 
 		if (DownloadWithResume(strRemotePage, resolvedPage, requestPid)) {
 			m_downloadState.currentDownload = 1;
@@ -161,6 +163,7 @@ void WorkThread::WebServiceThread()
 			outcome.success = true;
 			outcome.resolvedPage = resolvedPage;
 			if (!isAsync) {
+				PostMessage(m_runtimeState.mainWnd, WM_HIDE_AFTER_DOWNLOAD, 0, 0);
 				SetForegroundWindow(FindGameWindowByProcessId(m_runtimeState.gameInfos, requestPid));
 			}
 			return outcome;
@@ -170,6 +173,9 @@ void WorkThread::WebServiceThread()
 			? L"Failed: queued async file update."
 			: L"Failed: client file request download.");
 		MarkClientDownloadFinished(requestPid);
+		if (!isAsync) {
+			PostMessage(m_runtimeState.mainWnd, WM_HIDE_AFTER_DOWNLOAD, 0, 0);
+		}
 		outcome.status = 502;
 		outcome.body = "Download Failed";
 		LogUpdateError(

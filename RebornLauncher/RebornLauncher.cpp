@@ -59,9 +59,14 @@ std::wstring g_strWorkPath;
 
 bool g_bRendering = true;
 WorkThread* g_workThreadPtr = nullptr;
+bool g_manualTrayMode = false;
+bool g_trayShownForDownload = false;
+bool g_hasSavedWindowPos = false;
+POINT g_savedWindowPos = { 0, 0 };
 
 constexpr UINT ID_TRAY_OPEN = 5005;
 constexpr UINT ID_START_NEW_GAME = 5006;
+constexpr UINT ID_HIDE_TO_TRAY = 5007;
 constexpr UINT_PTR kAnimTimerId = 7001;
 constexpr UINT kAnimIntervalMs = 90;
 constexpr COLORREF kTransparentColorKey = RGB(1, 1, 1);
@@ -75,6 +80,8 @@ HANDLE g_hSingleInstanceMutex = NULL;
 constexpr const wchar_t* kLauncherSingleInstanceMutexName = L"Local\\MapleFireReborn.RebornLauncher.SingleInstance";
 constexpr const wchar_t* kLauncherConfigSection = L"MapleFireReborn";
 constexpr const wchar_t* kLauncherConfigKeyGamePath = L"GamePath";
+constexpr const wchar_t* kLauncherConfigKeyWindowX = L"WindowX";
+constexpr const wchar_t* kLauncherConfigKeyWindowY = L"WindowY";
 constexpr const wchar_t* kCanonicalLauncherName = L"RebornLauncher.exe";
 constexpr ULONGLONG kMinInstallFreeBytes = 5ULL * 1024ULL * 1024ULL * 1024ULL;
 
@@ -160,6 +167,77 @@ bool TryParseDword(const std::wstring& value, DWORD& outValue) {
     }
     outValue = static_cast<DWORD>(parsed);
     return true;
+}
+
+bool TryParseInt(const std::wstring& value, int& outValue) {
+    if (value.empty()) {
+        return false;
+    }
+    wchar_t* end = nullptr;
+    long parsed = wcstol(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != L'\0') {
+        return false;
+    }
+    outValue = static_cast<int>(parsed);
+    return true;
+}
+
+POINT ClampWindowPositionToWorkArea(const POINT& pos) {
+    RECT workArea{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        workArea.left = 0;
+        workArea.top = 0;
+        workArea.right = GetSystemMetrics(SM_CXSCREEN);
+        workArea.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    POINT clamped = pos;
+    const int workLeft = static_cast<int>(workArea.left);
+    const int workTop = static_cast<int>(workArea.top);
+    const int workRight = static_cast<int>(workArea.right);
+    const int workBottom = static_cast<int>(workArea.bottom);
+    int maxX = workRight - static_cast<int>(g_szWindow.cx);
+    int maxY = workBottom - static_cast<int>(g_szWindow.cy);
+    if (maxX < workLeft) {
+        maxX = workLeft;
+    }
+    if (maxY < workTop) {
+        maxY = workTop;
+    }
+    if (clamped.x < workLeft) {
+        clamped.x = workLeft;
+    }
+    else if (clamped.x > maxX) {
+        clamped.x = maxX;
+    }
+    if (clamped.y < workTop) {
+        clamped.y = workTop;
+    }
+    else if (clamped.y > maxY) {
+        clamped.y = maxY;
+    }
+    return clamped;
+}
+
+bool LoadSavedLauncherWindowPosition(POINT& outPos) {
+    const std::wstring xValue = ReadLauncherConfigString(kLauncherConfigKeyWindowX);
+    const std::wstring yValue = ReadLauncherConfigString(kLauncherConfigKeyWindowY);
+    int x = 0;
+    int y = 0;
+    if (!TryParseInt(xValue, x) || !TryParseInt(yValue, y)) {
+        return false;
+    }
+
+    outPos.x = x;
+    outPos.y = y;
+    outPos = ClampWindowPositionToWorkArea(outPos);
+    return true;
+}
+
+void SaveLauncherWindowPosition(const POINT& pos) {
+    const POINT clamped = ClampWindowPositionToWorkArea(pos);
+    WriteLauncherConfigString(kLauncherConfigKeyWindowX, std::to_wstring(clamped.x));
+    WriteLauncherConfigString(kLauncherConfigKeyWindowY, std::to_wstring(clamped.y));
 }
 
 RelaunchArgs ParseRelaunchArgsFromCommandLine() {
@@ -531,6 +609,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     g_splashRenderer.SetInstance(hInstance);
     g_splashRenderer.SetWindowPlacementContext(&g_ptWindow, &g_szWindow);
     g_p2pController.InitializePaths(g_strCurrentModulePath, g_strWorkPath);
+    g_hasSavedWindowPos = LoadSavedLauncherWindowPosition(g_savedWindowPos);
 
 #ifdef _DEBUG
     AllocConsole();
@@ -701,6 +780,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     static ULONGLONG s_lastIdleClickTick = 0;
     static POINT s_lastIdleClickPoint = { 0, 0 };
+    static bool s_draggingWindow = false;
+    static POINT s_dragStartCursor = { 0, 0 };
+    static POINT s_dragStartWindow = { 0, 0 };
 
     switch (message)
     {
@@ -709,6 +791,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         g_p2pController.LoadStunServers();
         g_p2pController.ApplyP2PSettings();
         g_splashRenderer.EnsureAnimationFramesLoaded();
+        if (g_hasSavedWindowPos) {
+            g_splashRenderer.RestartDockToPosition(g_savedWindowPos);
+        }
+        else {
+            g_splashRenderer.RestartDockToCorner();
+        }
         SetTimer(hWnd, kAnimTimerId, kAnimIntervalMs, nullptr);
         InvalidateRect(hWnd, nullptr, TRUE);
         break;
@@ -729,11 +817,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_LBUTTONDOWN:
+    {
         if (g_splashRenderer.IsFollowingGameWindows()) {
             s_lastIdleClickTick = 0;
             return 0;
         }
-    {
+
         POINT clickPoint{};
         clickPoint.x = static_cast<SHORT>(LOWORD(lParam));
         clickPoint.y = static_cast<SHORT>(HIWORD(lParam));
@@ -762,10 +851,52 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             RequestNewGameWithError(hWnd);
             return 0;
         }
-    }
-        ReleaseCapture();
-        SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+
+        g_splashRenderer.CancelDockToCorner();
+        s_draggingWindow = true;
+        GetCursorPos(&s_dragStartCursor);
+        RECT dragRect{};
+        if (GetWindowRect(hWnd, &dragRect)) {
+            s_dragStartWindow.x = dragRect.left;
+            s_dragStartWindow.y = dragRect.top;
+        }
+        else {
+            s_dragStartWindow = g_ptWindow;
+        }
+        SetCapture(hWnd);
         return 0;
+    }
+    case WM_MOUSEMOVE:
+        if (s_draggingWindow) {
+            if ((wParam & MK_LBUTTON) == 0) {
+                s_draggingWindow = false;
+                ReleaseCapture();
+                return 0;
+            }
+            POINT dragCursor{};
+            GetCursorPos(&dragCursor);
+            const int newX = s_dragStartWindow.x + (dragCursor.x - s_dragStartCursor.x);
+            const int newY = s_dragStartWindow.y + (dragCursor.y - s_dragStartCursor.y);
+            SetWindowPos(hWnd, nullptr, newX, newY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (s_draggingWindow) {
+            s_draggingWindow = false;
+            ReleaseCapture();
+            RECT dragRect{};
+            if (GetWindowRect(hWnd, &dragRect)) {
+                g_ptWindow.x = dragRect.left;
+                g_ptWindow.y = dragRect.top;
+                SaveLauncherWindowPosition(g_ptWindow);
+            }
+            return 0;
+        }
+        break;
+    case WM_CAPTURECHANGED:
+        s_draggingWindow = false;
+        break;
     case WM_RBUTTONUP:
         if (g_splashRenderer.IsFollowingGameWindows()) {
             return 0;
@@ -774,9 +905,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         POINT pt{};
         GetCursorPos(&pt);
         HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_STRING, ID_START_NEW_GAME, L"Start New Game");
+        AppendMenuW(hMenu, MF_STRING, ID_START_NEW_GAME, L"\u5f00\u59cb\u65b0\u6e38\u620f");
         AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"Exit");
+        AppendMenuW(hMenu, MF_STRING, ID_HIDE_TO_TRAY, L"\u9690\u85cf\u5230\u6258\u76d8");
+        AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"\u9000\u51fa");
         SetForegroundWindow(hWnd);
         TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
         DestroyMenu(hMenu);
@@ -794,6 +926,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     case WM_TRAYICON:
         if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
+            g_manualTrayMode = false;
+            g_trayShownForDownload = false;
             g_trayIconManager.RestoreFromTray(hWnd);
             return 0;
         }
@@ -801,8 +935,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             POINT pt{};
             GetCursorPos(&pt);
             HMENU hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING, ID_TRAY_OPEN, L"Open");
-            AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"Exit");
+            AppendMenuW(hMenu, MF_STRING, ID_TRAY_OPEN, L"\u6253\u5f00");
+            AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"\u9000\u51fa");
             SetForegroundWindow(hWnd);
             TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
             DestroyMenu(hMenu);
@@ -810,13 +944,36 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
     case WM_MINIMIZE_TO_TRAY:
+        g_manualTrayMode = true;
+        g_trayShownForDownload = false;
         g_trayIconManager.MinimizeToTray(hWnd, g_hInstance);
         break;
     case WM_DELETE_TRAY:
-        g_trayIconManager.RestoreFromTray(hWnd);
+        if (!g_manualTrayMode) {
+            g_trayShownForDownload = false;
+            g_trayIconManager.RestoreFromTray(hWnd);
+        }
+        break;
+    case WM_SHOW_FOR_DOWNLOAD:
+        if (g_manualTrayMode) {
+            g_trayIconManager.RestoreFromTray(hWnd);
+            g_trayShownForDownload = true;
+        }
+        else if (!IsWindowVisible(hWnd)) {
+            g_trayIconManager.RestoreFromTray(hWnd);
+            g_trayShownForDownload = false;
+        }
+        break;
+    case WM_HIDE_AFTER_DOWNLOAD:
+        if (g_manualTrayMode && g_trayShownForDownload) {
+            g_trayIconManager.MinimizeToTray(hWnd, g_hInstance);
+            g_trayShownForDownload = false;
+        }
         break;
     case WM_SYSCOMMAND:
         if ((wParam & 0xFFF0) == SC_MINIMIZE) {
+            g_manualTrayMode = true;
+            g_trayShownForDownload = false;
             g_trayIconManager.MinimizeToTray(hWnd, g_hInstance);
             return 0;
         }
@@ -830,12 +987,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         switch (wmId)
         {
         case ID_TRAY_OPEN:
+            g_manualTrayMode = false;
+            g_trayShownForDownload = false;
             g_trayIconManager.RestoreFromTray(hWnd);
             break;
         case ID_START_NEW_GAME:
             if (!g_splashRenderer.IsFollowingGameWindows()) {
                 RequestNewGameWithError(hWnd);
             }
+            break;
+        case ID_HIDE_TO_TRAY:
+            g_manualTrayMode = true;
+            g_trayShownForDownload = false;
+            g_trayIconManager.MinimizeToTray(hWnd, g_hInstance);
             break;
         case IDM_EXIT:
             DestroyWindow(hWnd);
@@ -847,8 +1011,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_MOVE:
         if (!g_splashRenderer.IsFollowingGameWindows()) {
-            g_ptWindow.x = LOWORD(lParam);
-            g_ptWindow.y = HIWORD(lParam);
+            g_ptWindow.x = static_cast<SHORT>(LOWORD(lParam));
+            g_ptWindow.y = static_cast<SHORT>(HIWORD(lParam));
         }
         break;
     case WM_CLOSE:
@@ -857,6 +1021,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         KillTimer(hWnd, kAnimTimerId);
         g_trayIconManager.Delete();
+        SaveLauncherWindowPosition(g_ptWindow);
         PostQuitMessage(0);
         break;
     default:

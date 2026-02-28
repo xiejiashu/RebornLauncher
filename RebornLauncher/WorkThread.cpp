@@ -104,7 +104,36 @@ WorkThread::WorkThread(HWND hWnd, const std::wstring& strModulePath, const std::
 	}
 
 	std::thread WebTr([this]() {
-		WebServiceThread();
+		while (m_runtimeState.run) {
+			try {
+				WebServiceThread();
+			}
+			catch (const std::exception& ex) {
+				LogUpdateError(
+					"UF-WS-EXCEPTION",
+					"WorkThread::WorkThread:web-supervisor",
+					"Web service thread threw std::exception",
+					ex.what() ? ex.what() : "unknown");
+			}
+			catch (...) {
+				LogUpdateError(
+					"UF-WS-EXCEPTION",
+					"WorkThread::WorkThread:web-supervisor",
+					"Web service thread threw unknown exception");
+			}
+
+			if (!m_runtimeState.run) {
+				break;
+			}
+
+			SetLauncherStatus(L"Web service stopped, restarting...");
+			LogUpdateError(
+				"UF-WS-SUPERVISOR",
+				"WorkThread::WorkThread:web-supervisor",
+				"Web service thread stopped unexpectedly",
+				"Supervisor will restart WebServiceThread.");
+			Sleep(500);
+		}
 	});
 	WebTr.detach();
 }

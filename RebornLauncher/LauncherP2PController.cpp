@@ -68,18 +68,20 @@ void LauncherP2PController::ApplyP2PSettings() {
     m_p2pSettings.signalAuthToken = ResolveSignalAuthToken(workDir);
 
     if (m_ui.statusText) {
-        std::wstring status = m_p2pSettings.enabled ? L"P2P: enabled" : L"P2P: disabled";
+        std::wstring status = m_p2pSettings.enabled
+            ? L"P2P\uff1a\u5df2\u542f\u7528"
+            : L"P2P\uff1a\u5df2\u7981\u7528";
         if (!m_p2pSettings.signalEndpoint.empty()) {
-            status += L" | Signal: custom";
+            status += L" | \u4fe1\u4ee4\uff1a\u81ea\u5b9a\u4e49";
         } else {
-            status += L" | Signal: auto";
+            status += L" | \u4fe1\u4ee4\uff1a\u81ea\u52a8";
         }
         SetWindowTextW(m_ui.statusText, status.c_str());
     }
 
     m_animStatusText = m_p2pSettings.enabled
-        ? L"Updating resources with P2P..."
-        : L"Updating resources...";
+        ? L"\u4f7f\u7528 P2P \u66f4\u65b0\u8d44\u6e90\u4e2d..."
+        : L"\u66f4\u65b0\u8d44\u6e90\u4e2d...";
 
     if (m_workThreadPtr) {
         m_workThreadPtr->UpdateP2PSettings(m_p2pSettings);
@@ -172,18 +174,18 @@ void LauncherP2PController::CreateMainControls(HWND hWnd, HINSTANCE hInst) {
     int y = margin;
 
     m_ui.statusText = CreateWindowExW(
-        0, L"STATIC", L"Status: Ready", WS_CHILD | WS_VISIBLE,
+        0, L"STATIC", L"\u72b6\u6001\uff1a\u5c31\u7eea", WS_CHILD | WS_VISIBLE,
         margin, y, columnWidth, 24, hWnd, nullptr, hInst, nullptr);
 
     y += 28;
     m_ui.checkP2P = CreateWindowExW(
-        0, L"BUTTON", L"Enable P2P", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        0, L"BUTTON", L"\u542f\u7528 P2P", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
         margin, y, columnWidth, 24, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdCheckP2P)), hInst, nullptr);
     SendMessage(m_ui.checkP2P, BM_SETCHECK, BST_CHECKED, 0);
 
     y += 32;
     m_ui.stunTitle = CreateWindowExW(
-        0, L"STATIC", L"STUN Servers (double click to remove)", WS_CHILD | WS_VISIBLE,
+        0, L"STATIC", L"STUN \u670d\u52a1\u5668\uff08\u53cc\u51fb\u5220\u9664\uff09", WS_CHILD | WS_VISIBLE,
         margin, y, columnWidth, 20, hWnd, nullptr, hInst, nullptr);
 
     y += 20;
@@ -199,13 +201,13 @@ void LauncherP2PController::CreateMainControls(HWND hWnd, HINSTANCE hInst) {
         margin, y, columnWidth - 110, 24, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStunEdit)), hInst, nullptr);
 
     m_ui.addStunBtn = CreateWindowExW(
-        0, L"BUTTON", L"Add", WS_CHILD | WS_VISIBLE,
+        0, L"BUTTON", L"\u6dfb\u52a0", WS_CHILD | WS_VISIBLE,
         margin + columnWidth - 100, y, 100, 24, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdStunAdd)), hInst, nullptr);
 
     const int rightX = margin + columnWidth + 40;
     int ry = margin;
     m_ui.totalLabel = CreateWindowExW(
-        0, L"STATIC", L"Total: 0/0", WS_CHILD | WS_VISIBLE,
+        0, L"STATIC", L"\u603b\u8fdb\u5ea6\uff1a0/0", WS_CHILD | WS_VISIBLE,
         rightX, ry, 220, 20, hWnd, nullptr, hInst, nullptr);
     ry += 24;
     m_ui.totalProgress = CreateWindowExW(
@@ -215,7 +217,7 @@ void LauncherP2PController::CreateMainControls(HWND hWnd, HINSTANCE hInst) {
 
     ry += 36;
     m_ui.fileLabel = CreateWindowExW(
-        0, L"STATIC", L"File: idle", WS_CHILD | WS_VISIBLE,
+        0, L"STATIC", L"\u5f53\u524d\u6587\u4ef6\uff1a\u7a7a\u95f2", WS_CHILD | WS_VISIBLE,
         rightX, ry, 420, 20, hWnd, nullptr, hInst, nullptr);
     ry += 24;
     m_ui.fileProgress = CreateWindowExW(
@@ -235,7 +237,7 @@ void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, 
     const int fileProgress = workThread.GetCurrentDownloadProgress();
     std::wstring stageStatus = workThread.GetLauncherStatus();
     if (stageStatus.empty()) {
-        stageStatus = L"Working...";
+        stageStatus = L"\u5904\u7406\u4e2d...";
     }
     if (m_ui.totalProgress && m_ui.fileProgress) {
         SendMessage(m_ui.totalProgress, PBM_SETRANGE32, 0, (std::max)(1, totalCount));
@@ -246,19 +248,19 @@ void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, 
 
     std::wstring fileName = workThread.GetCurrentDownloadFile();
     if (!fileName.empty()) {
-        m_animStatusText = L"Updating: " + fileName;
+        m_animStatusText = L"\u66f4\u65b0\u4e2d\uff1a" + fileName;
     } else {
         m_animStatusText = stageStatus;
     }
 
     if (m_ui.statusText) {
-        const std::wstring p2pPrefix = m_p2pSettings.enabled ? L"P2P ON | " : L"P2P OFF | ";
+        const std::wstring p2pPrefix = m_p2pSettings.enabled ? L"P2P \u5df2\u5f00\u542f | " : L"P2P \u5df2\u5173\u95ed | ";
         SetWindowTextW(m_ui.statusText, (p2pPrefix + stageStatus).c_str());
     }
     if (m_ui.totalLabel) {
         const int safeTotalText = (std::max)(1, totalCount);
         const int safeCurrentText = (std::max)(0, (std::min)(currentCount, safeTotalText));
-        const std::wstring totalText = L"Total: " + std::to_wstring(safeCurrentText) + L"/" + std::to_wstring(safeTotalText);
+        const std::wstring totalText = L"\u603b\u8fdb\u5ea6\uff1a" + std::to_wstring(safeCurrentText) + L"/" + std::to_wstring(safeTotalText);
         SetWindowTextW(m_ui.totalLabel, totalText.c_str());
     }
     if (m_ui.fileLabel) {

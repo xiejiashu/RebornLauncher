@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -29,8 +30,12 @@ constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Ma
 constexpr DWORD kVersionMapRefreshIntervalMs =5 * 60 * 1000;
 // Prevent repeated network requests for the same file in a hot loop.
 constexpr DWORD kDownloadRequestCooldownMs = 3000;
+// Do not re-dispatch asynchronous mismatch updates for the same file within 5 minutes.
+constexpr DWORD kAsyncDownloadRequestCooldownMs = 5 * 60 * 1000;
 // Current directory very rarely changes at runtime; cache it for hot hook path.
 constexpr DWORD kCurrentDirRefreshIntervalMs = 2000;
+// Skip expensive MD5 hashing for existing files larger than 500 KB.
+constexpr ULONGLONG kMd5SkipSizeThresholdBytes = 500ULL * 1024ULL;
 
 #if !defined(_M_IX86)
 #error CryptoLoader must be built as Win32 (x86).
@@ -56,6 +61,8 @@ static std::mutex g_mapFilesMutex;
 static DWORD g_lastMapRefreshTick = 0;
 static std::unordered_map<std::string, DWORD> g_downloadRequestTicks;
 static std::mutex g_downloadRequestTicksMutex;
+static std::unordered_map<std::string, DWORD> g_asyncDownloadRequestTicks;
+static std::mutex g_asyncDownloadRequestTicksMutex;
 
 struct FileMetadataCacheEntry {
     bool exists = false;
@@ -74,6 +81,17 @@ static DWORD g_lastCurrentDirRefreshTick = 0;
 
 namespace {
 
+enum class DownloadRequestMode {
+    Sync,
+    Async
+};
+
+enum class DownloadDispatchResult {
+    None,
+    SyncRequested,
+    AsyncQueued
+};
+
 std::string ToUpperAscii(std::string value)
 {
     for (char& ch : value) {
@@ -88,6 +106,23 @@ std::string ToLowerAscii(std::string value)
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return value;
+}
+
+bool EndsWithImgExtension(const CHAR* fileName)
+{
+    if (fileName == nullptr) {
+        return false;
+    }
+    const size_t len = std::strlen(fileName);
+    if (len < 4) {
+        return false;
+    }
+
+    const char c0 = fileName[len - 4];
+    const char c1 = static_cast<char>(fileName[len - 3] | 0x20);
+    const char c2 = static_cast<char>(fileName[len - 2] | 0x20);
+    const char c3 = static_cast<char>(fileName[len - 1] | 0x20);
+    return c0 == '.' && c1 == 'i' && c2 == 'm' && c3 == 'g';
 }
 
 std::string NormalizePathKey(std::filesystem::path path)
@@ -327,7 +362,25 @@ bool ShouldRequestDownloadNow(const std::string& key)
     return true;
 }
 
-bool RequestDownloadFromLauncher(const std::string& page)
+bool CanRequestAsyncDownloadNow(const std::string& key)
+{
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lock(g_asyncDownloadRequestTicksMutex);
+    const auto it = g_asyncDownloadRequestTicks.find(key);
+    if (it == g_asyncDownloadRequestTicks.end()) {
+        return true;
+    }
+    return static_cast<DWORD>(now - it->second) >= kAsyncDownloadRequestCooldownMs;
+}
+
+void MarkAsyncDownloadRequested(const std::string& key)
+{
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lock(g_asyncDownloadRequestTicksMutex);
+    g_asyncDownloadRequestTicks[key] = now;
+}
+
+bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mode)
 {
     if (page.empty()) {
         return false;
@@ -352,7 +405,8 @@ bool RequestDownloadFromLauncher(const std::string& page)
 
     const std::string encodedPage = UrlEncode(page);
     const std::string requestPath = std::string(kDownloadPath) + "?page=" + encodedPage
-        + "&pid=" + std::to_string(_getpid());
+        + "&pid=" + std::to_string(_getpid())
+        + ((mode == DownloadRequestMode::Async) ? "&mode=async" : "");
     const std::wstring requestPathW = Utf8ToWide(requestPath);
     if (requestPathW.empty()) {
         return false;
@@ -366,6 +420,13 @@ bool RequestDownloadFromLauncher(const std::string& page)
         0);
     if (!hSession) {
         return false;
+    }
+    if (mode == DownloadRequestMode::Async) {
+        WinHttpSetTimeouts(hSession, 200, 200, 1200, 1200);
+    }
+    else {
+        // Missing files must complete synchronously to satisfy the game's file-exists expectation.
+        WinHttpSetTimeouts(hSession, 1000, 1000, 120000, 120000);
     }
 
     HINTERNET hConnect = WinHttpConnect(hSession, L"localhost", kLauncherPort, 0);
@@ -400,7 +461,12 @@ bool RequestDownloadFromLauncher(const std::string& page)
             &statusCode,
             &statusCodeSize,
             WINHTTP_NO_HEADER_INDEX)) {
-            ok = (statusCode == 200);
+            if (mode == DownloadRequestMode::Async) {
+                ok = (statusCode == 202 || statusCode == 200);
+            }
+            else {
+                ok = (statusCode == 200);
+            }
         }
     }
 
@@ -508,8 +574,9 @@ std::string FindExpectedMd5ByKey(const std::string& key)
     return it->second;
 }
 
-void HandleHookedFileCheck(const CHAR* lpFileName)
+DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileExists)
 {
+    DownloadDispatchResult dispatchResult = DownloadDispatchResult::None;
     if (lpFileName != nullptr && lpFileName[0] != '\0') {
         try {
             const std::filesystem::path inputPath = std::filesystem::u8path(lpFileName);
@@ -525,40 +592,69 @@ void HandleHookedFileCheck(const CHAR* lpFileName)
                 RefreshVersionMapCacheIfNeeded();
                 const std::string expectedMd5 = FindExpectedMd5ByKey(normalizedKey);
 
-                FileMetadataSnapshot metadata;
-                bool metadataOk = ReadFileMetadataFast(absolutePath, metadata);
-                if (!metadataOk) {
-                    std::error_code ec;
-                    metadata.exists = std::filesystem::exists(absolutePath, ec) && !ec;
-                    if (!metadata.exists) {
+                if (!expectedMd5.empty()) {
+                    bool needDownload = (fileExists == FALSE);
+                    bool md5Mismatch = false;
+                    if (!needDownload) {
+                        FileMetadataSnapshot metadata;
+                        metadata.exists = true;
                         metadata.fileSize = 0;
                         metadata.lastWriteTime = {};
-                    }
-                }
 
-                bool needDownload = !metadata.exists;
-                if (metadata.exists && !expectedMd5.empty()) {
-                    bool cacheHit = false;
-                    if (metadataOk) {
-                        cacheHit = TryGetCachedMd5Result(normalizedKey, expectedMd5, metadata, needDownload);
-                    }
+                        bool metadataOk = ReadFileMetadataFast(absolutePath, metadata);
+                        if (!metadataOk) {
+                            std::error_code ec;
+                            const uintmax_t size = std::filesystem::file_size(absolutePath, ec);
+                            metadata.fileSize = ec ? 0 : static_cast<ULONGLONG>(size);
+                        }
+                        else if (!metadata.exists) {
+                            // File could be deleted after GetFileAttributesA call.
+                            needDownload = true;
+                        }
 
-                    if (!cacheHit) {
-                        const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
-                        if (!localMd5.empty()) {
-                            needDownload = localMd5 != expectedMd5;
-                            if (metadataOk) {
-                                UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, !needDownload);
+                        if (!needDownload) {
+                            const bool skipMd5ForLargeFile = metadata.fileSize > kMd5SkipSizeThresholdBytes;
+                            if (skipMd5ForLargeFile) {
+                                if (metadataOk) {
+                                    UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, true);
+                                }
+                            }
+                            else {
+                                bool cacheHit = false;
+                                if (metadataOk) {
+                                    cacheHit = TryGetCachedMd5Result(normalizedKey, expectedMd5, metadata, needDownload);
+                                }
+
+                                if (!cacheHit) {
+                                    const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
+                                    if (!localMd5.empty()) {
+                                        needDownload = localMd5 != expectedMd5;
+                                        md5Mismatch = needDownload;
+                                        if (metadataOk) {
+                                            UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, !needDownload);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                }
 
-                if (needDownload) {
-                    const std::string page = BuildDownloadPage(inputPath, absolutePath);
-                    if (ShouldRequestDownloadNow(normalizedKey)) {
-                        // Must block until launcher finishes the requested download.
-                        RequestDownloadFromLauncher(page);
+                    if (needDownload) {
+                        const std::string page = BuildDownloadPage(inputPath, absolutePath);
+                        if (md5Mismatch) {
+                            if (CanRequestAsyncDownloadNow(normalizedKey)) {
+                                if (RequestDownloadFromLauncher(page, DownloadRequestMode::Async)) {
+                                    MarkAsyncDownloadRequested(normalizedKey);
+                                    dispatchResult = DownloadDispatchResult::AsyncQueued;
+                                }
+                            }
+                        }
+                        else if (ShouldRequestDownloadNow(normalizedKey)) {
+                            // Missing files must block until launcher finishes the requested download.
+                            if (RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
+                                dispatchResult = DownloadDispatchResult::SyncRequested;
+                            }
+                        }
                     }
                 }
             }
@@ -567,6 +663,7 @@ void HandleHookedFileCheck(const CHAR* lpFileName)
             // Swallow all exceptions in hook path to avoid breaking game file I/O.
         }
     }
+    return dispatchResult;
 }
 
 } // namespace
@@ -578,45 +675,20 @@ static GETFILEATTRIBUTESA_FN g_originalGetFileAttributesA = GetFileAttributesA;
 
 DWORD WINAPI HookedGetFileAttributesA(LPCSTR lpFileName)
 {
+    const DWORD attributes = g_originalGetFileAttributesA(lpFileName);
+    const BOOL fileExists = (attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+        ? TRUE
+        : FALSE;
     // 如果后缀名是.img，就处理一下
-    if (lpFileName != nullptr && lpFileName[0] != '\0') {
-        std::string fileNameStr(lpFileName);
-        const size_t dotPos = fileNameStr.rfind('.');
-        if (dotPos != std::string::npos) {
-            std::string ext = fileNameStr.substr(dotPos);
-            for (char& ch : ext) {
-                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            }
-            if (ext == ".img") {
-                HandleHookedFileCheck(lpFileName);
-            }
+    if (EndsWithImgExtension(lpFileName)) {
+        const DownloadDispatchResult dispatchResult = HandleHookedFileCheck(lpFileName, fileExists);
+        if (dispatchResult == DownloadDispatchResult::SyncRequested) {
+            return g_originalGetFileAttributesA(lpFileName);
         }
     }
 
-    return g_originalGetFileAttributesA(lpFileName);
-}
-
-int __fastcall Hook_sub_5081A080(
-    void* this_ptr,
-    void* edx,
-    const CHAR* lpFileName,
-    DWORD dwCreationDisposition,
-    DWORD dwFlagsAndAttributes,
-    DWORD dwShareMode,
-    DWORD dwDesiredAccess,
-    _SECURITY_ATTRIBUTES* lpSecurityAttributes,
-    HANDLE hTemplateFile)
-{
-    HandleHookedFileCheck(lpFileName);
-    return g_sub_5081A080(this_ptr,
-        edx,
-        lpFileName,
-        dwCreationDisposition,
-        dwFlagsAndAttributes,
-        dwShareMode,
-        dwDesiredAccess,
-        lpSecurityAttributes,
-        hTemplateFile);
+    return attributes;
 }
 
 bool SetHook(bool attach, void** ptrTarget, void* ptrDetour)
@@ -657,14 +729,6 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         DisableThreadLibraryCalls(hModule);
         CloseHandle(CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
             do {
-                /*HMODULE hNameSpaceMoudel = GetModuleHandleA("NameSpace.dll");
-                if (hNameSpaceMoudel != nullptr)
-                {
-                    SetHook(true,
-                        reinterpret_cast<void**>(&g_sub_5081A080),
-                        reinterpret_cast<void*>(&Hook_sub_5081A080));
-					break;
-                }*/
                 if(SetHook(true,
                         reinterpret_cast<void**>(&g_originalGetFileAttributesA),
                         reinterpret_cast<void*>(&HookedGetFileAttributesA)))

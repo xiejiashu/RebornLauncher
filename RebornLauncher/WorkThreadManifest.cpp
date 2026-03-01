@@ -447,12 +447,6 @@ bool WorkThread::RefreshRemoteVersionManifest()
 				{
 					std::filesystem::create_directories(parent, ec);
 				}
-				ec.clear();
-				if (!std::filesystem::exists(localPath, ec))
-				{
-					std::ofstream ofs(localPath, std::ios::binary);
-					ofs.close();
-				}
 			}
 			catch (...) {
 				std::cout << "Skip invalid local page path: " << config.m_strPage << std::endl;

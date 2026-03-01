@@ -2,6 +2,7 @@
 #include "WorkThreadResumeDownload.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 
@@ -9,6 +10,18 @@
 
 #include "WorkThread.h"
 #include "WorkThreadNetUtils.h"
+
+namespace {
+
+bool IsImgFilePath(const std::string& filePath) {
+	std::string extension = std::filesystem::u8path(filePath).extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	return extension == ".img";
+}
+
+} // namespace
 
 namespace workthread::resume {
 
@@ -71,12 +84,18 @@ bool ResumeDownloader::DownloadHttp(
 	m_networkState.client->set_connection_timeout(8, 0);
 	m_networkState.client->set_read_timeout(30, 0);
 	m_networkState.client->set_write_timeout(15, 0);
+	const bool disableResume = IsImgFilePath(filePath);
 
 	httplib::Result res;
 	{
-		httplib::Headers headers;
-		headers.insert({ "Range", "bytes=0-0" });
-		res = m_networkState.client->Get(normalizedUrl.c_str(), headers);
+		if (disableResume) {
+			res = m_networkState.client->Head(normalizedUrl.c_str());
+		}
+		else {
+			httplib::Headers headers;
+			headers.insert({ "Range", "bytes=0-0" });
+			res = m_networkState.client->Get(normalizedUrl.c_str(), headers);
+		}
 		if (res && (res->status == 200 || res->status == 206)) {
 			m_downloadState.currentDownloadSize = static_cast<int>(workthread::netutils::ParseTotalSizeFromResponse(*res));
 			onProgress(0, static_cast<uint64_t>((std::max)(0, m_downloadState.currentDownloadSize)));
@@ -93,14 +112,17 @@ bool ResumeDownloader::DownloadHttp(
 		existingFileSize = static_cast<size_t>(existingFile.tellg());
 		existingFile.close();
 	}
+	if (disableResume) {
+		existingFileSize = 0;
+	}
 	if (m_downloadState.currentDownloadSize > 0) {
-		if (existingFileSize == static_cast<size_t>(m_downloadState.currentDownloadSize)) {
+		if (!disableResume && existingFileSize == static_cast<size_t>(m_downloadState.currentDownloadSize)) {
 			onProgress(
 				static_cast<uint64_t>(existingFileSize),
 				static_cast<uint64_t>(m_downloadState.currentDownloadSize));
 			return true;
 		}
-		if (existingFileSize > static_cast<size_t>(m_downloadState.currentDownloadSize)) {
+		if (!disableResume && existingFileSize > static_cast<size_t>(m_downloadState.currentDownloadSize)) {
 			std::error_code ec;
 			std::filesystem::remove(std::filesystem::u8path(filePath), ec);
 			existingFileSize = 0;
@@ -123,26 +145,43 @@ bool ResumeDownloader::DownloadHttp(
 		headers.insert({ "Range", rangeValue });
 	}
 
-	std::ofstream file(std::filesystem::u8path(filePath), std::ios::binary | std::ios::in | std::ios::out);
-	if (!file.is_open()) {
-		std::ofstream createFile(std::filesystem::u8path(filePath), std::ios::binary | std::ios::out);
-		createFile.close();
-		file.open(std::filesystem::u8path(filePath), std::ios::binary | std::ios::in | std::ios::out);
-	}
-	if (!file.is_open()) {
-		return false;
-	}
-
+	const std::filesystem::path targetPath = std::filesystem::u8path(filePath);
+	std::ofstream file;
 	std::streamoff nextWriteOffset = static_cast<std::streamoff>(existingFileSize);
-	file.seekp(nextWriteOffset, std::ios::beg);
-	if (!file) {
-		file.close();
+	const auto openOutputForWrite = [&]() -> bool {
+		if (!file.is_open()) {
+			std::error_code ec;
+			const auto parent = targetPath.parent_path();
+			if (!parent.empty() && !std::filesystem::exists(parent, ec)) {
+				std::filesystem::create_directories(parent, ec);
+			}
+
+			if (disableResume) {
+				file.open(targetPath, std::ios::binary | std::ios::out | std::ios::trunc);
+			}
+			else {
+				file.open(targetPath, std::ios::binary | std::ios::in | std::ios::out);
+				if (!file.is_open()) {
+					std::ofstream createFile(targetPath, std::ios::binary | std::ios::out);
+					createFile.close();
+					file.open(targetPath, std::ios::binary | std::ios::in | std::ios::out);
+				}
+			}
+		}
+		if (!file.is_open()) {
+			return false;
+		}
+
+		file.clear();
+		file.seekp(nextWriteOffset, std::ios::beg);
+		return static_cast<bool>(file);
+	};
+	if (existingFileSize > 0 && !openOutputForWrite()) {
 		return false;
 	}
 
 	res = m_networkState.client->Get(normalizedUrl.c_str(), headers, [&](const char* data, size_t dataLength) {
-		file.seekp(nextWriteOffset, std::ios::beg);
-		if (!file) {
+		if (!openOutputForWrite()) {
 			return false;
 		}
 		file.write(data, static_cast<std::streamsize>(dataLength));
@@ -157,7 +196,9 @@ bool ResumeDownloader::DownloadHttp(
 			static_cast<uint64_t>((std::max)(0, m_downloadState.currentDownloadSize)));
 		return true;
 	});
-	file.close();
+	if (file.is_open()) {
+		file.close();
+	}
 
 	if (!res || (res->status != 200 && res->status != 206)) {
 		return false;

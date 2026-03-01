@@ -43,6 +43,7 @@ struct VersionState {
 	std::vector<std::string> basePackageUrls;
 	std::string extractRootPrefix;
 	std::string localVersionMD5;
+	std::unordered_set<std::string> noUpdateFiles;
 };
 
 struct DownloadProgressState {
@@ -170,6 +171,8 @@ private:
 	bool InitializeDownloadEnvironment();
 	bool EnsureBasePackageReady();
 	void LoadLocalVersionState();
+	void LoadNoUpdateList();
+	bool IsRuntimeUpdateSkipped(const std::string& localPath) const;
 	void RefreshRemoteManifestIfChanged();
 	bool HandleSelfUpdateAndExit();
 	bool PublishMappingsAndLaunchInitialClient();

@@ -2,10 +2,10 @@
 
 Top files accessed by agent workflows (descending by access count).
 
-1. `RebornLauncher/WorkThread.cpp` - 471
+1. `RebornLauncher/WorkThread.cpp` - 476
 2. `CryptoLoader/dllmain.cpp` - 281
 3. `RebornLauncher/RebornLauncher.cpp` - 235
-4. `RebornLauncher/WorkThread.h` - 126
+4. `RebornLauncher/WorkThread.h` - 129
 5. `RebornLauncher/WorkThreadChunkDownload.cpp` - 109
 6. `UpdateForge/UpdateForge.cpp` - 95
 7. `RebornLauncher/WorkThreadWebService.cpp` - 65

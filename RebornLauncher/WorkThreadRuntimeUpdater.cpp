@@ -65,6 +65,12 @@ bool WorkThreadRuntimeUpdater::Execute() {
 		const std::string& resolvedPage = cfgIt->first;
 		const VersionConfig& resolvedConfig = cfgIt->second;
 		std::string strLocalFile = resolvedPage;
+		if (m_worker.IsRuntimeUpdateSkipped(strLocalFile)) {
+			std::cout << "Skipping runtime update by NoUPdate.txt: " << strLocalFile << std::endl;
+			m_worker.SetLauncherStatus(L"Up to date: " + str2wstr(strLocalFile));
+			m_worker.m_downloadState.currentDownload += 1;
+			continue;
+		}
 		m_worker.SetLauncherStatus(L"Preparing update: " + str2wstr(strLocalFile));
 		const std::string strPage = workthread::netutils::JoinUrlPath(
 			m_worker.m_networkState.page,

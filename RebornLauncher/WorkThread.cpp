@@ -58,6 +58,34 @@ std::string ResolveBasePackageP2PResourcePath(const std::string& configuredPacka
 	return {};
 }
 
+std::string NormalizeNoUpdatePathKey(std::string value) {
+	value = TrimAscii(std::move(value));
+	if (value.empty()) {
+		return {};
+	}
+
+	std::replace(value.begin(), value.end(), '\\', '/');
+	while (value.rfind("./", 0) == 0) {
+		value.erase(0, 2);
+	}
+	while (!value.empty() && value.front() == '/') {
+		value.erase(value.begin());
+	}
+
+	std::filesystem::path normalizedPath = std::filesystem::u8path(value).lexically_normal();
+	std::string key = normalizedPath.generic_string();
+	while (key.rfind("./", 0) == 0) {
+		key.erase(0, 2);
+	}
+	while (!key.empty() && key.front() == '/') {
+		key.erase(key.begin());
+	}
+	std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	return key;
+}
+
 void MarkFileHidden(const std::string& path) {
 	std::error_code ec;
 	const auto fsPath = std::filesystem::u8path(path);
@@ -199,6 +227,60 @@ void WorkThread::LoadLocalVersionState()
 {
 	workthread::versionload::WorkThreadLocalVersionLoader loader(*this);
 	loader.Execute();
+	LoadNoUpdateList();
+}
+
+void WorkThread::LoadNoUpdateList() {
+	m_versionState.noUpdateFiles.clear();
+
+	std::error_code ec;
+	const std::filesystem::path listPath =
+		std::filesystem::current_path(ec) / std::filesystem::u8path("NoUPdate.txt");
+	if (ec) {
+		return;
+	}
+
+	std::ifstream in(listPath, std::ios::binary);
+	if (!in.is_open()) {
+		return;
+	}
+
+	std::string line;
+	size_t lineNumber = 0;
+	while (std::getline(in, line)) {
+		++lineNumber;
+		if (lineNumber == 1 && line.size() >= 3 &&
+			static_cast<unsigned char>(line[0]) == 0xEF &&
+			static_cast<unsigned char>(line[1]) == 0xBB &&
+			static_cast<unsigned char>(line[2]) == 0xBF) {
+			line.erase(0, 3);
+		}
+
+		std::string trimmed = TrimAscii(line);
+		if (trimmed.empty()) {
+			continue;
+		}
+		if (trimmed[0] == '#' || trimmed[0] == ';') {
+			continue;
+		}
+
+		const std::string key = NormalizeNoUpdatePathKey(trimmed);
+		if (!key.empty()) {
+			m_versionState.noUpdateFiles.insert(key);
+		}
+	}
+
+	if (!m_versionState.noUpdateFiles.empty()) {
+		std::cout << "NoUPdate.txt loaded, skip entries: " << m_versionState.noUpdateFiles.size() << std::endl;
+	}
+}
+
+bool WorkThread::IsRuntimeUpdateSkipped(const std::string& localPath) const {
+	const std::string key = NormalizeNoUpdatePathKey(localPath);
+	if (key.empty()) {
+		return false;
+	}
+	return m_versionState.noUpdateFiles.find(key) != m_versionState.noUpdateFiles.end();
 }
 
 void WorkThread::RefreshRemoteManifestIfChanged()

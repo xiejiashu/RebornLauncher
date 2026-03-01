@@ -5,7 +5,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <libloaderapi.h>
-#include <windows.h>
+
 #include <wincrypt.h>
 #include <winhttp.h>
 #include <process.h>
@@ -22,43 +22,27 @@
 #include <string>
 #include <unordered_map>
 
+#if !defined(_M_IX86)
+#error CryptoLoader must be built as Win32 (x86).
+#endif
+
 constexpr uintptr_t kTargetAddr = 0x5081A080;
 constexpr int kLauncherPort = 12345;
 constexpr const char* kDownloadPath = "/download";
 constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Map";
-// 5 minutes
-constexpr DWORD kVersionMapRefreshIntervalMs =5 * 60 * 1000;
+// 0.5 minutes
+constexpr DWORD kVersionMapRefreshIntervalMs = 30 * 1000;
 // Prevent repeated network requests for the same file in a hot loop.
 constexpr DWORD kDownloadRequestCooldownMs = 3000;
 // Do not re-dispatch asynchronous mismatch updates for the same file within 5 minutes.
 constexpr DWORD kAsyncDownloadRequestCooldownMs = 5 * 60 * 1000;
 // Current directory very rarely changes at runtime; cache it for hot hook path.
 constexpr DWORD kCurrentDirRefreshIntervalMs = 2000;
-// Skip expensive MD5 hashing for existing files larger than 500 KB.
-constexpr ULONGLONG kMd5SkipSizeThresholdBytes = 500ULL * 1024ULL;
-
-#if !defined(_M_IX86)
-#error CryptoLoader must be built as Win32 (x86).
-#endif
-
-using NameSpaceSub5081A080 = int(__fastcall*)(
-    void* this_ptr,
-    void* edx,
-    const CHAR* lpFileName,
-    DWORD dwCreationDisposition,
-    DWORD dwFlagsAndAttributes,
-    DWORD dwShareMode,
-    DWORD dwDesiredAccess,
-    _SECURITY_ATTRIBUTES* lpSecurityAttributes,
-    HANDLE hTemplateFile);
-
-static NameSpaceSub5081A080 g_sub_5081A080 =
-    reinterpret_cast<NameSpaceSub5081A080>(kTargetAddr);
 
 // Full path (normalized lowercase Windows path) -> expected file MD5 from launcher.
 static std::map<std::string, std::string> g_mapFiles;
 static std::mutex g_mapFilesMutex;
-static DWORD g_lastMapRefreshTick = 0;
+static std::once_flag g_versionMapRefreshWorkerOnce;
 static std::unordered_map<std::string, DWORD> g_downloadRequestTicks;
 static std::mutex g_downloadRequestTicksMutex;
 static std::unordered_map<std::string, DWORD> g_asyncDownloadRequestTicks;
@@ -106,6 +90,15 @@ std::string ToLowerAscii(std::string value)
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return value;
+}
+
+void LogCryptoLoaderMessage(const std::string& message)
+{
+    if (message.empty()) {
+        return;
+    }
+    const std::string text = std::string("[CryptoLoader] ") + message + "\n";
+    OutputDebugStringA(text.c_str());
 }
 
 bool EndsWithImgExtension(const CHAR* fileName)
@@ -387,20 +380,23 @@ bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mo
     }
 
     auto UrlEncode = [](const std::string& value) {
-        std::ostringstream oss;
-        oss << std::hex << std::uppercase;
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string encoded;
+        encoded.reserve(value.size() * 3);
         for (unsigned char ch : value) {
             if ((ch >= 'A' && ch <= 'Z') ||
                 (ch >= 'a' && ch <= 'z') ||
                 (ch >= '0' && ch <= '9') ||
                 ch == '-' || ch == '_' || ch == '.' || ch == '~' || ch == '/') {
-                oss << static_cast<char>(ch);
+                encoded.push_back(static_cast<char>(ch));
             }
             else {
-                oss << '%' << static_cast<int>(ch >> 4) << static_cast<int>(ch & 0x0F);
+                encoded.push_back('%');
+                encoded.push_back(kHex[ch >> 4]);
+                encoded.push_back(kHex[ch & 0x0F]);
             }
         }
-        return oss.str();
+        return encoded;
     };
 
     const std::string encodedPage = UrlEncode(page);
@@ -543,35 +539,46 @@ bool RefreshVersionMapFromSharedMemory()
     return true;
 }
 
-void RefreshVersionMapCacheIfNeeded()
+DWORD WINAPI VersionMapRefreshWorkerProc(LPVOID)
 {
-    const DWORD now = GetTickCount();
-    bool shouldRefresh = false;
-    {
-        std::lock_guard<std::mutex> lock(g_mapFilesMutex);
-        if (g_mapFiles.empty() || now - g_lastMapRefreshTick >= kVersionMapRefreshIntervalMs) {
-            g_lastMapRefreshTick = now;
-            shouldRefresh = true;
-        }
+    for (;;) {
+        const bool ok = RefreshVersionMapFromSharedMemory();
+        Sleep(ok ? kVersionMapRefreshIntervalMs : 2000);
     }
-
-    if (shouldRefresh) {
-        RefreshVersionMapFromSharedMemory();
-    }
+    return 0;
 }
 
-std::string FindExpectedMd5ByKey(const std::string& key)
+void StartVersionMapRefreshWorker()
 {
+    std::call_once(g_versionMapRefreshWorkerOnce, []() {
+        if (!RefreshVersionMapFromSharedMemory()) {
+            LogCryptoLoaderMessage("initial version map refresh failed");
+        }
+
+        HANDLE threadHandle = CreateThread(nullptr, 0, VersionMapRefreshWorkerProc, nullptr, 0, nullptr);
+        if (threadHandle) {
+            CloseHandle(threadHandle);
+        }
+        else {
+            LogCryptoLoaderMessage("failed to create version map refresh worker thread");
+        }
+    });
+}
+
+bool TryGetExpectedMd5ByKey(const std::string& key, std::string& expectedMd5)
+{
+    expectedMd5.clear();
     if (key.empty()) {
-        return {};
+        return false;
     }
 
     std::lock_guard<std::mutex> lock(g_mapFilesMutex);
-    auto it = g_mapFiles.find(key);
-    if (it == g_mapFiles.end()) {
-        return {};
+    const auto it = g_mapFiles.find(key);
+    if (it == g_mapFiles.end() || it->second.empty()) {
+        return false;
     }
-    return it->second;
+    expectedMd5 = it->second;
+    return true;
 }
 
 DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileExists)
@@ -588,73 +595,64 @@ DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileEx
 
             const std::string normalizedKey = NormalizePathKey(absolutePath);
             if (IsPathInCurrentDirectoryKey(normalizedKey)) {
+                StartVersionMapRefreshWorker();
 
-                RefreshVersionMapCacheIfNeeded();
-                const std::string expectedMd5 = FindExpectedMd5ByKey(normalizedKey);
-
-                if (!expectedMd5.empty()) {
-                    bool needDownload = (fileExists == FALSE);
-                    bool md5Mismatch = false;
-                    if (!needDownload) {
-                        FileMetadataSnapshot metadata;
-                        metadata.exists = true;
-                        metadata.fileSize = 0;
-                        metadata.lastWriteTime = {};
-
-                        bool metadataOk = ReadFileMetadataFast(absolutePath, metadata);
-                        if (!metadataOk) {
-                            std::error_code ec;
-                            const uintmax_t size = std::filesystem::file_size(absolutePath, ec);
-                            metadata.fileSize = ec ? 0 : static_cast<ULONGLONG>(size);
-                        }
-                        else if (!metadata.exists) {
-                            // File could be deleted after GetFileAttributesA call.
-                            needDownload = true;
-                        }
-
-                        if (!needDownload) {
-                            const bool skipMd5ForLargeFile = metadata.fileSize > kMd5SkipSizeThresholdBytes;
-                            if (skipMd5ForLargeFile) {
-                                if (metadataOk) {
-                                    UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, true);
-                                }
-                            }
-                            else {
-                                bool cacheHit = false;
-                                if (metadataOk) {
-                                    cacheHit = TryGetCachedMd5Result(normalizedKey, expectedMd5, metadata, needDownload);
-                                }
-
-                                if (!cacheHit) {
-                                    const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
-                                    if (!localMd5.empty()) {
-                                        needDownload = localMd5 != expectedMd5;
-                                        md5Mismatch = needDownload;
-                                        if (metadataOk) {
-                                            UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, !needDownload);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                std::string expectedMd5;
+                if (!TryGetExpectedMd5ByKey(normalizedKey, expectedMd5)) {
+                    if (!RefreshVersionMapFromSharedMemory() ||
+                        !TryGetExpectedMd5ByKey(normalizedKey, expectedMd5)) {
+                        return dispatchResult;
                     }
+                }
 
-                    if (needDownload) {
-                        const std::string page = BuildDownloadPage(inputPath, absolutePath);
-                        if (md5Mismatch) {
-                            if (CanRequestAsyncDownloadNow(normalizedKey)) {
-                                if (RequestDownloadFromLauncher(page, DownloadRequestMode::Async)) {
-                                    MarkAsyncDownloadRequested(normalizedKey);
-                                    dispatchResult = DownloadDispatchResult::AsyncQueued;
-                                }
-                            }
-                        }
-                        else if (ShouldRequestDownloadNow(normalizedKey)) {
-                            // Missing files must block until launcher finishes the requested download.
-                            if (RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
-                                dispatchResult = DownloadDispatchResult::SyncRequested;
-                            }
-                        }
+                const std::string page = BuildDownloadPage(inputPath, absolutePath);
+                if (page.empty()) {
+                    return dispatchResult;
+                }
+
+                if (fileExists == FALSE) {
+                    if (ShouldRequestDownloadNow(normalizedKey) &&
+                        RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
+                        dispatchResult = DownloadDispatchResult::SyncRequested;
+                    }
+                    return dispatchResult;
+                }
+
+                FileMetadataSnapshot metadata;
+                metadata.exists = true;
+                metadata.fileSize = 0;
+                metadata.lastWriteTime = {};
+                const bool metadataOk = ReadFileMetadataFast(absolutePath, metadata);
+                if (metadataOk && !metadata.exists) {
+                    // File may have been deleted after GetFileAttributesA returned.
+                    if (ShouldRequestDownloadNow(normalizedKey) &&
+                        RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
+                        dispatchResult = DownloadDispatchResult::SyncRequested;
+                    }
+                    return dispatchResult;
+                }
+
+                bool md5Mismatch = false;
+                bool cacheHit = false;
+                if (metadataOk) {
+                    cacheHit = TryGetCachedMd5Result(normalizedKey, expectedMd5, metadata, md5Mismatch);
+                }
+
+                if (!cacheHit) {
+                    const std::string localMd5 = ToUpperAscii(ComputeFileMd5(absolutePath));
+                    if (localMd5.empty()) {
+                        return dispatchResult;
+                    }
+                    md5Mismatch = (localMd5 != expectedMd5);
+                    if (metadataOk) {
+                        UpdateCachedMd5Result(normalizedKey, expectedMd5, metadata, !md5Mismatch);
+                    }
+                }
+
+                if (md5Mismatch && CanRequestAsyncDownloadNow(normalizedKey)) {
+                    if (RequestDownloadFromLauncher(page, DownloadRequestMode::Async)) {
+                        MarkAsyncDownloadRequested(normalizedKey);
+                        dispatchResult = DownloadDispatchResult::AsyncQueued;
                     }
                 }
             }

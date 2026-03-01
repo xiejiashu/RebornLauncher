@@ -1,4 +1,4 @@
-// RebornLauncher main entry and message routing.
+ï»¿// RebornLauncher main entry and message routing.
 
 #include "framework.h"
 #include "RebornLauncher.h"
@@ -584,8 +584,8 @@ bool RequestNewGameWithError(HWND owner) {
         return true;
     }
     MessageBox(owner, TEXT("Failed to request new game launch."), TEXT("Error"), MB_OK | MB_ICONERROR);
-	// ½áÊøËùÓĞ¿ÉÄÜµÄ½©Ê¬ÊµÀı
-    
+	// ç»“æŸæ‰€æœ‰å¯èƒ½çš„åƒµå°¸å®ä¾‹
+
     return false;
 }
 
@@ -757,7 +757,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     INITCOMMONCONTROLSEX icc{ sizeof(INITCOMMONCONTROLSEX), ICC_PROGRESS_CLASS };
     InitCommonControlsEx(&icc);
 
-    HWND hWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, szWindowClass, L"RebornLauncher",
+    HWND hWnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, szWindowClass, L"æ«ç«å²›é‡ç”Ÿ",
                                 WS_POPUP,
                                 g_ptWindow.x, g_ptWindow.y, g_szWindow.cx, g_szWindow.cy, nullptr, nullptr, hInstance, nullptr);
     if (!hWnd) {

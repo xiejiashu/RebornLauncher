@@ -106,17 +106,24 @@ bool WorkThreadRuntimeUpdater::Execute() {
 #endif
 		}
 
-		const std::wstring strLocalFileW = str2wstr(strLocalFile);
-		if (!strLocalFileW.empty()) {
-			SetFileAttributesW(strLocalFileW.c_str(), FILE_ATTRIBUTE_NORMAL);
-			DeleteFileW(strLocalFileW.c_str());
+		bool allowDeferredOnBusy = true;
+#ifndef _DEBUG
+		if (strLocalFile == "UpdateTemp.exe") {
+			allowDeferredOnBusy = false;
+			const std::wstring updateTempW = str2wstr(strLocalFile);
+			if (!updateTempW.empty()) {
+				SetFileAttributesW(updateTempW.c_str(), FILE_ATTRIBUTE_NORMAL);
+				DeleteFileW(updateTempW.c_str());
+			}
+			else {
+				std::error_code ec;
+				std::filesystem::remove(std::filesystem::u8path(strLocalFile), ec);
+			}
 		}
-		else {
-			std::error_code ec;
-			std::filesystem::remove(std::filesystem::u8path(strLocalFile), ec);
-		}
+#endif
 
-		if (!m_worker.DownloadWithResume(strPage, strLocalFile)) {
+		bool queuedForDeferred = false;
+		if (!m_worker.DownloadWithResume(strPage, strLocalFile, 0, allowDeferredOnBusy, &queuedForDeferred)) {
 			std::cout << "Download failed for runtime file: " << strPage << std::endl;
 			m_worker.LogUpdateError(
 				"UF-RUNTIME-DOWNLOAD",
@@ -124,6 +131,9 @@ bool WorkThreadRuntimeUpdater::Execute() {
 				"Runtime file download failed",
 				std::string("remote_path=") + strPage + ", local_file=" + strLocalFile);
 			return false;
+		}
+		if (queuedForDeferred) {
+			std::cout << "Runtime file is busy, queued for deferred retry: " << strLocalFile << std::endl;
 		}
 		m_worker.m_downloadState.currentDownload += 1;
 	}

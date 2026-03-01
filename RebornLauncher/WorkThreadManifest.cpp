@@ -465,6 +465,7 @@ bool WorkThread::RefreshRemoteVersionManifest()
 			m_versionState.runtimeList.push_back(download.asString());
 		}
 	}
+	m_versionState.localVersionMD5 = strRemoteVersionDatMd5;
 
 	SetLauncherStatus(L"Remote manifest refreshed.");
 	return true;

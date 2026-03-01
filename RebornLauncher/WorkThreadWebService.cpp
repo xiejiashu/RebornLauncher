@@ -152,14 +152,20 @@ void WorkThread::WebServiceThread()
 			PostMessage(m_runtimeState.mainWnd, WM_SHOW_FOR_DOWNLOAD, 0, 0);
 		}
 
-		if (DownloadWithResume(strRemotePage, resolvedPage, requestPid)) {
+		bool queuedForDeferred = false;
+		if (DownloadWithResume(strRemotePage, resolvedPage, requestPid, isAsync, &queuedForDeferred)) {
 			m_downloadState.currentDownload = 1;
-			SetLauncherStatus(isAsync
-				? L"Queued async file update completed."
-				: L"Client file request completed.");
+			if (queuedForDeferred) {
+				SetLauncherStatus(L"Processing queued async file update...");
+			}
+			else {
+				SetLauncherStatus(isAsync
+					? L"Queued async file update completed."
+					: L"Client file request completed.");
+			}
 			MarkClientDownloadFinished(requestPid);
-			outcome.status = 200;
-			outcome.body = "OK";
+			outcome.status = queuedForDeferred ? 202 : 200;
+			outcome.body = queuedForDeferred ? "DEFERRED" : "OK";
 			outcome.success = true;
 			outcome.resolvedPage = resolvedPage;
 			if (!isAsync) {

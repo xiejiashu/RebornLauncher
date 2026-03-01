@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace httplib
@@ -58,6 +60,14 @@ struct SelfUpdateState {
 	std::wstring moduleDir;
 };
 
+struct DeferredFileUpdateTask {
+	std::string remoteUrl;
+	std::string localPath;
+	DWORD ownerProcessId{ 0 };
+	uint32_t retryCount{ 0 };
+	ULONGLONG nextRetryTick{ 0 };
+};
+
 struct RuntimeState {
 	BOOL run{ TRUE };
 	HANDLE thread{ nullptr };
@@ -65,6 +75,9 @@ struct RuntimeState {
 	mutable std::mutex gameInfosMutex;
 	std::vector<HANDLE> fileMappings;
 	HANDLE mappingVersion{ nullptr };
+	std::deque<DeferredFileUpdateTask> deferredUpdateQueue;
+	std::unordered_set<std::string> deferredQueuedPaths;
+	mutable std::mutex deferredUpdateMutex;
 	HWND mainWnd{ nullptr };
 };
 
@@ -121,7 +134,12 @@ public:
 
 	void ExtractFiles(const std::string& archivePath, const std::string& outPath, const std::vector<DataBlock>& files);
 
-	bool DownloadWithResume(const std::string& url, const std::string& file_path, DWORD ownerProcessId = 0);
+	bool DownloadWithResume(
+		const std::string& url,
+		const std::string& file_path,
+		DWORD ownerProcessId = 0,
+		bool allowDeferredOnBusy = false,
+		bool* queuedForDeferred = nullptr);
 	bool DownloadFileFromAbsoluteUrl(const std::string& absoluteUrl, const std::string& filePath);
 	bool DownloadFileChunkedWithResume(const std::string& absoluteUrl, const std::string& filePath, size_t threadCount);
 
@@ -163,6 +181,8 @@ private:
 	void MarkClientDownloadStart(DWORD processId, const std::wstring& fileName);
 	void MarkClientDownloadProgress(DWORD processId, uint64_t downloaded, uint64_t total);
 	void MarkClientDownloadFinished(DWORD processId);
+	bool EnqueueDeferredFileUpdate(const std::string& remoteUrl, const std::string& localPath, DWORD ownerProcessId);
+	void ProcessDeferredFileUpdates();
 	void CleanupExitedGameInfos();
 	bool HasRunningGameProcess();
 	void TerminateAllGameProcesses();

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <httplib.h>
 #include <iostream>
+#include <random>
 #include <shellapi.h>
 #include <thread>
 
@@ -71,6 +72,12 @@ void MarkFileHidden(const std::string& path) {
 	if ((attrs & FILE_ATTRIBUTE_HIDDEN) == 0) {
 		SetFileAttributesW(pathW.c_str(), attrs | FILE_ATTRIBUTE_HIDDEN);
 	}
+}
+
+ULONGLONG BuildNextManifestPollTick(ULONGLONG nowTick) {
+	static thread_local std::mt19937 rng{ static_cast<unsigned int>(GetTickCount()) };
+	std::uniform_int_distribution<DWORD> intervalDist(5000, 10000);
+	return nowTick + static_cast<ULONGLONG>(intervalDist(rng));
 }
 
 } // namespace
@@ -199,25 +206,29 @@ void WorkThread::RefreshRemoteManifestIfChanged()
 	std::string strRemoteVersionDatMD5;
 	{
 		std::string strVersionDatMD5 = m_versionState.manifestPath + ".md5";
+		const auto fetchMd5Body = [](httplib::Client& client, const std::string& requestPath) -> std::string {
+			client.set_follow_location(true);
+			client.set_connection_timeout(2, 0);
+			client.set_read_timeout(3, 0);
+			client.set_write_timeout(2, 0);
+			auto res = client.Get(requestPath.c_str());
+			if (res && res->status == 200) {
+				return TrimAscii(res->body);
+			}
+			return {};
+		};
 		if (IsHttpUrl(strVersionDatMD5)) {
-			httplib::Client clientExtract("");
 			std::string baseUrl;
 			std::string path;
 			if (ExtractBaseAndPath(strVersionDatMD5, baseUrl, path)) {
-				clientExtract = httplib::Client(baseUrl.c_str());
-				auto res = clientExtract.Get(path.c_str());
-				if (res && res->status == 200) {
-					strRemoteVersionDatMD5 = TrimAscii(res->body);
-				}
+				httplib::Client clientExtract(baseUrl.c_str());
+				strRemoteVersionDatMD5 = fetchMd5Body(clientExtract, path);
 			}
 		}
 		else
 		{
 			httplib::Client client(m_networkState.url);
-			auto res = client.Get("/" + strVersionDatMD5);
-			if (res && res->status == 200) {
-				strRemoteVersionDatMD5 = TrimAscii(res->body);
-			}
+			strRemoteVersionDatMD5 = fetchMd5Body(client, NormalizeRelativeUrlPath(strVersionDatMD5));
 		}
 	}
 
@@ -240,9 +251,26 @@ bool WorkThread::HandleSelfUpdateAndExit()
 		return false;
 	}
 
-	Stop();
 	const std::wstring args = BuildRelaunchArgs(_getpid(), m_selfUpdateState.modulePath, L"selfupdate");
-	ShellExecuteW(nullptr, L"open", L"UpdateTemp.exe", args.c_str(), m_selfUpdateState.moduleDir.c_str(), SW_SHOWNORMAL);
+	const HINSTANCE launchResult = ShellExecuteW(
+		nullptr,
+		L"open",
+		L"UpdateTemp.exe",
+		args.c_str(),
+		m_selfUpdateState.moduleDir.c_str(),
+		SW_SHOWNORMAL);
+	if (reinterpret_cast<INT_PTR>(launchResult) <= 32) {
+		SetLauncherStatus(L"Failed: launcher self-update relaunch.");
+		LogUpdateError(
+			"UF-SELFUPDATE-LAUNCH",
+			"WorkThread::HandleSelfUpdateAndExit",
+			"Failed to relaunch UpdateTemp.exe",
+			"shell_execute=UpdateTemp.exe");
+		m_selfUpdateState.updateSelf = false;
+		return false;
+	}
+
+	Stop();
 	PostMessage(m_runtimeState.mainWnd, WM_DELETE_TRAY, 0, 0);
 	ExitProcess(0);
 	return true;
@@ -251,7 +279,7 @@ bool WorkThread::HandleSelfUpdateAndExit()
 bool WorkThread::PublishMappingsAndLaunchInitialClient()
 {
 	// unsigned long long dwTick = GetTickCount64();
-	// WriteDataToMapping(); 不写入映射了，直接让客户端从文件读取，减少一次内存拷贝和映射资源占用
+	// WriteDataToMapping(); 涓嶅啓鍏ユ槧灏勪簡锛岀洿鎺ヨ瀹㈡埛绔粠鏂囦欢璇诲彇锛屽噺灏戜竴娆″唴瀛樻嫹璐濆拰鏄犲皠璧勬簮鍗犵敤
 
 	// unsigned long long dwNewTick = GetTickCount64();
 	// std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
@@ -268,6 +296,8 @@ bool WorkThread::PublishMappingsAndLaunchInitialClient()
 
 void WorkThread::MonitorClientsUntilShutdown()
 {
+	ULONGLONG nextManifestPollTick = BuildNextManifestPollTick(GetTickCount64());
+	ULONGLONG nextDeferredRetryTick = GetTickCount64() + 1000ULL;
 	do
 	{
 		CleanupExitedGameInfos();
@@ -279,7 +309,24 @@ void WorkThread::MonitorClientsUntilShutdown()
 			break;
 		}
 
-		Sleep(1);
+		const ULONGLONG nowTick = GetTickCount64();
+		if (nowTick >= nextManifestPollTick) {
+			if (m_launchFlowMutex.try_lock()) {
+				RefreshRemoteManifestIfChanged();
+				m_launchFlowMutex.unlock();
+			}
+			nextManifestPollTick = BuildNextManifestPollTick(nowTick);
+		}
+
+		if (nowTick >= nextDeferredRetryTick) {
+			if (m_launchFlowMutex.try_lock()) {
+				ProcessDeferredFileUpdates();
+				m_launchFlowMutex.unlock();
+			}
+			nextDeferredRetryTick = nowTick + 1000ULL;
+		}
+
+		Sleep(15);
 	}
 	while (m_runtimeState.run);
 

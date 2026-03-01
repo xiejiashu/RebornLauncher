@@ -136,6 +136,22 @@ void WorkThread::MarkClientDownloadFinished(DWORD processId)
 bool WorkThread::LaunchGameClient()
 {
 	SetLauncherStatus(L"Launching game client...");
+	const auto notifyLaunchFailureUi = [this]() {
+		if (!m_runtimeState.mainWnd) {
+			return;
+		}
+		PostMessage(m_runtimeState.mainWnd, WM_SHOW_FOR_DOWNLOAD, 0, 0);
+		ShowWindow(m_runtimeState.mainWnd, SW_SHOWNORMAL);
+		SetWindowPos(
+			m_runtimeState.mainWnd,
+			HWND_TOPMOST,
+			0,
+			0,
+			0,
+			0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+		SetForegroundWindow(m_runtimeState.mainWnd);
+	};
 	STARTUPINFOA si = { sizeof(si) };
 	PROCESS_INFORMATION pi{};
 
@@ -143,8 +159,7 @@ bool WorkThread::LaunchGameClient()
 	GetCurrentDirectoryA(MAX_PATH, currentDir);
 
 	std::string exePathStr = std::string(currentDir) + "\\" + wstr2str(m_szProcessName);
-	// Ð´ÏÂÂ·¾¶
-	LogUpdateError("UF-LAUNCH-EXEPATH", "WorkThread::LaunchGameClient", "Launching game client", exePathStr);
+	// Log resolved executable path for diagnostics.
 	if (!CreateProcessA(NULL, &exePathStr[0], NULL, NULL, FALSE, 0, NULL, currentDir, &si, &pi)) {
 		const DWORD lastError = GetLastError();
 		std::cerr << "CreateProcess failed, error: " << lastError << std::endl;
@@ -155,6 +170,7 @@ bool WorkThread::LaunchGameClient()
 			"CreateProcess failed",
 			std::string("exe_path=") + exePathStr,
 			lastError);
+		notifyLaunchFailureUi();
 		return false;
 	} 
 
@@ -198,6 +214,7 @@ bool WorkThread::LaunchGameClient()
 				std::string("pid=") + std::to_string(pi.dwProcessId) + ", exit_code=<unknown>",
 				GetLastError());
 		}
+		notifyLaunchFailureUi();
 	}
 	return true;
 }

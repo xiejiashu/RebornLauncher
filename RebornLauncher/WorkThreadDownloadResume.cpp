@@ -25,6 +25,63 @@ std::string ToLowerAscii(std::string value) {
 	return value;
 }
 
+std::string NormalizeDeferredQueueKey(std::string value) {
+	std::replace(value.begin(), value.end(), '/', '\\');
+	return ToLowerAscii(std::move(value));
+}
+
+bool IsFileBusyError(DWORD errorCode) {
+	return errorCode == ERROR_SHARING_VIOLATION ||
+		errorCode == ERROR_LOCK_VIOLATION ||
+		errorCode == ERROR_USER_MAPPED_FILE;
+}
+
+bool IsFileBusyForWrite(const std::string& filePath, DWORD* outErrorCode = nullptr) {
+	std::error_code ec;
+	const std::filesystem::path fsPath = std::filesystem::u8path(filePath);
+	if (!std::filesystem::exists(fsPath, ec)) {
+		if (outErrorCode) {
+			*outErrorCode = ERROR_FILE_NOT_FOUND;
+		}
+		return false;
+	}
+
+	const std::wstring filePathW = fsPath.wstring();
+	HANDLE handle = CreateFileW(
+		filePathW.c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr);
+	if (handle != INVALID_HANDLE_VALUE) {
+		CloseHandle(handle);
+		if (outErrorCode) {
+			*outErrorCode = ERROR_SUCCESS;
+		}
+		return false;
+	}
+
+	const DWORD errorCode = GetLastError();
+	if (outErrorCode) {
+		*outErrorCode = errorCode;
+	}
+	if (IsFileBusyError(errorCode)) {
+		return true;
+	}
+	if (errorCode == ERROR_ACCESS_DENIED && std::filesystem::exists(fsPath, ec)) {
+		return true;
+	}
+	return false;
+}
+
+DWORD ComputeDeferredRetryDelayMs(uint32_t retryCount) {
+	const uint32_t capped = (std::min)(retryCount, static_cast<uint32_t>(20));
+	const DWORD delay = 1500U + static_cast<DWORD>(capped) * 1000U;
+	return (std::min)(delay, static_cast<DWORD>(15000));
+}
+
 const VersionConfig* ResolveVersionConfigByPath(
 	const std::map<std::string, VersionConfig>& files,
 	const std::string& filePath) {
@@ -52,14 +109,43 @@ const VersionConfig* ResolveVersionConfigByPath(
 
 } // namespace
 
-bool WorkThread::DownloadWithResume(const std::string& url, const std::string& file_path, DWORD ownerProcessId) {
+bool WorkThread::DownloadWithResume(
+	const std::string& url,
+	const std::string& file_path,
+	DWORD ownerProcessId,
+	bool allowDeferredOnBusy,
+	bool* queuedForDeferred) {
 	std::string strUrl = NormalizeRelativeUrlPath(url);
 	std::cout << __FILE__ << ":" << __LINE__ << " url:" << m_networkState.url << " page:" << strUrl << std::endl;
 	const std::wstring filePathW = str2wstr(file_path, static_cast<int>(file_path.length()));
+	if (queuedForDeferred) {
+		*queuedForDeferred = false;
+	}
 	SetLauncherStatus(L"Downloading: " + filePathW);
 	SetCurrentDownloadFile(filePathW);
 	MarkClientDownloadStart(ownerProcessId, filePathW);
 	MarkClientDownloadProgress(ownerProcessId, 0, 0);
+
+	const auto finishWithDeferred = [&]() -> bool {
+		if (!allowDeferredOnBusy) {
+			return false;
+		}
+		if (!EnqueueDeferredFileUpdate(strUrl, file_path, ownerProcessId)) {
+			return false;
+		}
+		if (queuedForDeferred) {
+			*queuedForDeferred = true;
+		}
+		MarkClientDownloadFinished(ownerProcessId);
+		return true;
+	};
+
+	DWORD busyError = ERROR_SUCCESS;
+	if (allowDeferredOnBusy && IsFileBusyForWrite(file_path, &busyError)) {
+		if (finishWithDeferred()) {
+			return true;
+		}
+	}
 
 	workthread::resume::ResumeDownloader downloader(m_networkState, m_downloadState);
 	const auto reportProgress = [this, ownerProcessId](uint64_t downloaded, uint64_t total) {
@@ -173,6 +259,9 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		}
 		SetLauncherStatus(L"P2P file verification failed, retrying HTTP...");
 		if (!resetLocalFile()) {
+			if (allowDeferredOnBusy && IsFileBusyForWrite(file_path, &busyError) && finishWithDeferred()) {
+				return true;
+			}
 			MarkClientDownloadFinished(ownerProcessId);
 			return false;
 		}
@@ -211,9 +300,16 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 		if (attempt < 2) {
 			SetLauncherStatus(L"Downloaded file incomplete, retrying...");
 			if (!resetLocalFile()) {
+				if (allowDeferredOnBusy && IsFileBusyForWrite(file_path, &busyError) && finishWithDeferred()) {
+					return true;
+				}
 				break;
 			}
 		}
+	}
+
+	if (!ok && allowDeferredOnBusy && IsFileBusyForWrite(file_path, &busyError) && finishWithDeferred()) {
+		return true;
 	}
 
 	if (!ok) {
@@ -222,4 +318,86 @@ bool WorkThread::DownloadWithResume(const std::string& url, const std::string& f
 
 	MarkClientDownloadFinished(ownerProcessId);
 	return ok;
+}
+
+bool WorkThread::EnqueueDeferredFileUpdate(
+	const std::string& remoteUrl,
+	const std::string& localPath,
+	DWORD ownerProcessId) {
+	const std::string normalizedKey = NormalizeDeferredQueueKey(localPath);
+	if (normalizedKey.empty()) {
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(m_runtimeState.deferredUpdateMutex);
+	const auto inserted = m_runtimeState.deferredQueuedPaths.insert(normalizedKey);
+	if (!inserted.second) {
+		for (auto& task : m_runtimeState.deferredUpdateQueue) {
+			if (NormalizeDeferredQueueKey(task.localPath) == normalizedKey) {
+				task.remoteUrl = remoteUrl;
+				task.ownerProcessId = ownerProcessId;
+				return true;
+			}
+		}
+		return true;
+	}
+
+	DeferredFileUpdateTask task;
+	task.remoteUrl = remoteUrl;
+	task.localPath = localPath;
+	task.ownerProcessId = ownerProcessId;
+	task.retryCount = 0;
+	task.nextRetryTick = GetTickCount64() + 1000ULL;
+	m_runtimeState.deferredUpdateQueue.push_back(std::move(task));
+	return true;
+}
+
+void WorkThread::ProcessDeferredFileUpdates() {
+	DeferredFileUpdateTask task;
+	{
+		const ULONGLONG nowTick = GetTickCount64();
+		std::lock_guard<std::mutex> lock(m_runtimeState.deferredUpdateMutex);
+		auto dueIt = std::find_if(
+			m_runtimeState.deferredUpdateQueue.begin(),
+			m_runtimeState.deferredUpdateQueue.end(),
+			[nowTick](const DeferredFileUpdateTask& item) {
+				return nowTick >= item.nextRetryTick;
+			});
+		if (dueIt == m_runtimeState.deferredUpdateQueue.end()) {
+			return;
+		}
+		task = *dueIt;
+		m_runtimeState.deferredQueuedPaths.erase(NormalizeDeferredQueueKey(task.localPath));
+		m_runtimeState.deferredUpdateQueue.erase(dueIt);
+	}
+
+	const auto requeueTask = [&](DeferredFileUpdateTask failedTask) {
+		failedTask.retryCount += 1;
+		failedTask.nextRetryTick =
+			GetTickCount64() + static_cast<ULONGLONG>(ComputeDeferredRetryDelayMs(failedTask.retryCount));
+		const std::string queueKey = NormalizeDeferredQueueKey(failedTask.localPath);
+		if (queueKey.empty()) {
+			return;
+		}
+
+		std::lock_guard<std::mutex> lock(m_runtimeState.deferredUpdateMutex);
+		const auto inserted = m_runtimeState.deferredQueuedPaths.insert(queueKey);
+		if (!inserted.second) {
+			return;
+		}
+		m_runtimeState.deferredUpdateQueue.push_back(std::move(failedTask));
+	};
+
+	DWORD busyError = ERROR_SUCCESS;
+	if (IsFileBusyForWrite(task.localPath, &busyError)) {
+		requeueTask(std::move(task));
+		return;
+	}
+
+	bool queuedForDeferred = false;
+	if (DownloadWithResume(task.remoteUrl, task.localPath, task.ownerProcessId, false, &queuedForDeferred)) {
+		return;
+	}
+
+	requeueTask(std::move(task));
 }

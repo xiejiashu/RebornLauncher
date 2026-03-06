@@ -15,8 +15,8 @@
 #include <array>
 #include <cwctype>
 #include <filesystem>
-#include <iostream>
 #include <process.h>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <shellapi.h>
@@ -95,6 +95,14 @@ struct RelaunchArgs {
 
 std::wstring QuoteCommandArg(const std::wstring& value) {
     return L"\"" + value + L"\"";
+}
+
+void DebugLog(const std::wstring& message) {
+    std::wstring line = message;
+    if (line.empty() || line.back() != L'\n') {
+        line.push_back(L'\n');
+    }
+    OutputDebugStringW(line.c_str());
 }
 
 std::wstring NormalizePathForCompare(const std::filesystem::path& input) {
@@ -454,8 +462,10 @@ bool HandleCleanupRelay(const RelaunchArgs& relaunchArgs) {
         const std::filesystem::path canonicalPath = std::filesystem::path(g_strCurrentModulePath).parent_path() / kCanonicalLauncherName;
         if (!PathsEqual(canonicalPath, std::filesystem::path(g_strCurrentModulePath))) {
             if (!CopySelfToTarget(canonicalPath)) {
-                std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to promote launcher to canonical name: "
-                    << canonicalPath.c_str() << std::endl;
+                std::wstringstream ss;
+                ss << __FILEW__ << L":" << __LINE__ << L" failed to promote launcher to canonical name: "
+                    << canonicalPath.c_str();
+                DebugLog(ss.str());
                 return false;
             }
             RelaunchArgs nextArgs;
@@ -463,8 +473,10 @@ bool HandleCleanupRelay(const RelaunchArgs& relaunchArgs) {
             nextArgs.cleanupPath = g_strCurrentModulePath;
             nextArgs.stage = L"promote";
             if (!LaunchProcess(canonicalPath, nextArgs, canonicalPath.parent_path())) {
-                std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to relaunch canonical launcher: "
-                    << canonicalPath.c_str() << std::endl;
+                std::wstringstream ss;
+                ss << __FILEW__ << L":" << __LINE__ << L" failed to relaunch canonical launcher: "
+                    << canonicalPath.c_str();
+                DebugLog(ss.str());
                 return false;
             }
             ExitProcess(0);
@@ -491,9 +503,11 @@ bool RelocateLauncherIfNeeded() {
     }
 
     if (!CopySelfToTarget(targetExe)) {
-        std::wcout << __FILEW__ << L":" << __LINE__
+        std::wstringstream ss;
+        ss << __FILEW__ << L":" << __LINE__
             << L" failed to copy launcher to target: " << targetExe.c_str()
-            << L" error=" << GetLastError() << std::endl;
+            << L" error=" << GetLastError();
+        DebugLog(ss.str());
         return false;
     }
 
@@ -505,8 +519,10 @@ bool RelocateLauncherIfNeeded() {
     nextArgs.cleanupPath = g_strCurrentModulePath;
     nextArgs.stage = L"relocate";
     if (!LaunchProcess(targetExe, nextArgs, targetDir)) {
-        std::wcout << __FILEW__ << L":" << __LINE__ << L" failed to launch relocated launcher: "
-            << targetExe.c_str() << std::endl;
+        std::wstringstream ss;
+        ss << __FILEW__ << L":" << __LINE__ << L" failed to launch relocated launcher: "
+            << targetExe.c_str();
+        DebugLog(ss.str());
         return false;
     }
 
@@ -549,9 +565,11 @@ void CreateDesktopLauncherShortcut(const std::filesystem::path& targetDir, const
         return;
     }
 
-    std::wcout << __FILEW__ << TEXT(":") << __LINE__
+    std::wstringstream ss;
+    ss << __FILEW__ << TEXT(":") << __LINE__
         << TEXT(" SHGetSpecialFolderLocation(CSIDL_DESKTOP) failed, skip shortcut. err=")
-        << hrDesktop << std::endl;
+        << hrDesktop;
+    DebugLog(ss.str());
 }
 
 bool IsProcessRunning(DWORD dwProcessId) {
@@ -569,12 +587,9 @@ bool IsProcessRunning(DWORD dwProcessId) {
 
 bool RequestRunningLauncherRunClient() {
     httplib::Client cli("localhost", 12345);
-    for (int i = 0; i < 10; ++i) {
-        auto res = cli.Get("/RunClient");
-        if (res && res->status == 200) {
-            return true;
-        }
-        Sleep(200);
+    auto res = cli.Get("/RunClient");
+    if (res && res->status == 200) {
+        return true;
     }
     return false;
 }
@@ -584,7 +599,27 @@ bool RequestNewGameWithError(HWND owner) {
         return true;
     }
     MessageBox(owner, TEXT("Failed to request new game launch."), TEXT("Error"), MB_OK | MB_ICONERROR);
-	// 结束所有可能的僵尸实例
+	// Terminate any potential stale launcher instances.
+	HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (hSnap != INVALID_HANDLE_VALUE) {
+		PROCESSENTRY32 pe{};
+		pe.dwSize = sizeof(pe);
+        if (Process32First(hSnap, &pe)) {
+            do {
+                if (_wcsicmp(pe.szExeFile, g_strCurrentExeName.c_str()) == 0) {
+                    if (pe.th32ProcessID == _getpid()) {
+                        continue;
+					}
+                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                    if (hProc) {
+                        TerminateProcess(hProc, 0);
+                        CloseHandle(hProc);
+                    }
+                }
+            } while (Process32Next(hSnap, &pe));
+        }
+		CloseHandle(hSnap);
+	}
 
     return false;
 }
@@ -618,7 +653,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     freopen_s(&stream, "CONOUT$", "w", stderr);
 #endif
 
-    std::wcout << TEXT("Start:") << lpCmdLine << std::endl;
+    DebugLog(std::wstring(TEXT("Start:")) + lpCmdLine);
 
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) {
@@ -630,7 +665,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return -1;
     }
 
-    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
 #ifndef _DEBUG
     const RelaunchArgs relaunchArgs = ParseRelaunchArgsFromCommandLine();
     if (!HandleCleanupRelay(relaunchArgs)) {
@@ -666,10 +700,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
     MyRegisterClass(hInstance);
-    std::cout << "77777777777777" << std::endl;
 
     if (!InitInstance(hInstance, true)) {
-        std::cout << "888888888888" << std::endl;
         if (g_gdiplusToken != 0) {
             Gdiplus::GdiplusShutdown(g_gdiplusToken);
             g_gdiplusToken = 0;
@@ -712,7 +744,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         Sleep(15);
     }
 
-    std::cout << "Request stopped" << std::endl;
     updateCoordinator.Stop();
     g_updateCoordinatorPtr = nullptr;
     g_p2pController.SetUpdateCoordinator(nullptr);
@@ -720,8 +751,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
         g_gdiplusToken = 0;
     }
-
-    std::cout << "ooooooooooooooooooo" << std::endl;
 
     CoUninitialize();
     if (g_hSingleInstanceMutex) {

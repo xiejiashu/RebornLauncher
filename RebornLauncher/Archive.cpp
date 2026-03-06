@@ -6,7 +6,6 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <thread>
 
 #include <archive.h>
@@ -213,11 +212,13 @@ bool LauncherUpdateCoordinator::VerifyArchiveReadable(const std::string& archive
 	if (VerifyArchiveReadableInternal(archivePath, error)) {
 		return true;
 	}
-	LogUpdateError(
+	LogUpdateErrorDetailsFmt(
 		"UF-ARCHIVE-VERIFY",
 		"LauncherUpdateCoordinator::VerifyArchiveReadable",
 		"Archive verification failed",
-		std::string("archive=") + archivePath + ", error=" + error);
+		"archive={}, error={}",
+		archivePath,
+		error);
 	return false;
 }
 
@@ -225,11 +226,12 @@ bool LauncherUpdateCoordinator::Extract7z(const std::string& filename, const std
 {
 	std::vector<DataBlock> allFiles = ScanArchive(filename);
 	if (allFiles.empty()) {
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-ARCHIVE-EMPTY",
 			"LauncherUpdateCoordinator::Extract7z",
 			"Archive has no extractable files",
-			std::string("archive=") + filename);
+			"archive={}",
+			filename);
 		return false;
 	}
 
@@ -265,19 +267,28 @@ bool LauncherUpdateCoordinator::Extract7z(const std::string& filename, const std
 		}
 
 		if (extractFailed.load()) {
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-ARCHIVE-EXTRACT",
 				"LauncherUpdateCoordinator::Extract7z",
 				"Archive extraction failed",
-				std::string("archive=") + filename);
+				"archive={}",
+				filename);
 			return false;
 		}
 
-		std::cout << filename << " extraction completed" << std::endl;
+		LogUpdateInfoFmt(
+			"UF-ARCHIVE-EXTRACT",
+			"LauncherUpdateCoordinator::Extract7z",
+			"Archive extraction completed (archive={})",
+			filename);
 		return true;
 	}
 
-	std::cout << filename << " is empty, no files to extract" << std::endl;
+	LogUpdateWarnFmt(
+		"UF-ARCHIVE-EMPTY",
+		"LauncherUpdateCoordinator::Extract7z",
+		"Archive contains no files to extract (archive={})",
+		filename);
 	return false;
 }
 
@@ -291,7 +302,13 @@ std::vector<DataBlock> LauncherUpdateCoordinator::ScanArchive(const std::string&
 	archive_read_support_filter_all(a);
 
 	if (archive_read_open_filename(a, archivePath.c_str(), 10240) != ARCHIVE_OK) {
-		std::cerr << "Failed to open archive: " << archive_error_string(a) << std::endl;
+		LogUpdateErrorDetailsFmt(
+			"UF-ARCHIVE-OPEN",
+			"LauncherUpdateCoordinator::ScanArchive",
+			"Failed to open archive",
+			"archive={}, error={}",
+			archivePath,
+			archive_error_string(a));
 		archive_read_free(a);
 		return files;
 	}
@@ -341,7 +358,13 @@ bool LauncherUpdateCoordinator::ExtractFiles(const std::string& archivePath, con
 	archive_read_support_format_7zip(a);
 	archive_read_support_filter_all(a);
 	if (archive_read_open_filename(a, archivePath.c_str(), 10240) != ARCHIVE_OK) {
-		std::cerr << "Failed to reopen archive for file: " << archive_error_string(a) << std::endl;
+		LogUpdateErrorDetailsFmt(
+			"UF-ARCHIVE-REOPEN",
+			"LauncherUpdateCoordinator::ExtractFiles",
+			"Failed to reopen archive for extraction",
+			"archive={}, error={}",
+			archivePath,
+			archive_error_string(a));
 		archive_read_free(a);
 		return false;
 	}
@@ -393,7 +416,13 @@ bool LauncherUpdateCoordinator::ExtractFiles(const std::string& archivePath, con
 
 			std::ofstream outputFile(filePath, std::ios::binary | std::ios::trunc);
 			if (!outputFile.is_open()) {
-				std::cerr << "Failed to create output file: " << outputPath << std::endl;
+				LogUpdateErrorDetailsFmt(
+					"UF-ARCHIVE-WRITE",
+					"LauncherUpdateCoordinator::ExtractFiles",
+					"Failed to create output file",
+					"archive={}, output={}",
+					archivePath,
+					outputPath);
 				archive_read_close(a);
 				archive_read_free(a);
 				return false;

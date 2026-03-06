@@ -2,7 +2,6 @@
 #include "LauncherUpdateCoordinator.h"
 
 #include <algorithm>
-#include <iostream>
 
 #include <httplib.h>
 
@@ -162,22 +161,22 @@ bool LauncherUpdateCoordinator::LaunchGameClient()
 	// Log resolved executable path for diagnostics.
 	if (!CreateProcessA(NULL, &exePathStr[0], NULL, NULL, FALSE, 0, NULL, currentDir, &si, &pi)) {
 		const DWORD lastError = GetLastError();
-		std::cerr << "CreateProcess failed, error: " << lastError << std::endl;
 		SetLauncherStatus(L"Failed: game launch process creation.");
 		LogUpdateError(
 			"UF-LAUNCH-CREATEPROCESS",
 			"LauncherUpdateCoordinator::LaunchGameClient",
 			"CreateProcess failed",
-			std::string("exe_path=") + exePathStr,
+			workthread::loggingdetail::FormatToString("exe_path={}", exePathStr),
 			lastError);
 		notifyLaunchFailureUi();
 		return false;
 	} 
-	LogUpdateError(
+	LogUpdateInfoFmt(
 		"UF-LAUNCH-SUCCESS",
 		"LauncherUpdateCoordinator::LaunchGameClient",
-		"Game client launched successfully",
-		std::string("exe_path=") + exePathStr + ", pid=" + std::to_string(pi.dwProcessId));
+		"Game client launched successfully (exe_path={}, pid={})",
+		exePathStr,
+		pi.dwProcessId);
 
 	if (pi.hThread) {
 		CloseHandle(pi.hThread);
@@ -193,30 +192,31 @@ bool LauncherUpdateCoordinator::LaunchGameClient()
 		m_runtimeState.gameInfos.push_back(gameInfo);
 	}
 
-	std::cout << "Client launched, pid=" << pi.dwProcessId << std::endl;
+	LogUpdateInfoFmt(
+		"UF-LAUNCH-PID",
+		"LauncherUpdateCoordinator::LaunchGameClient",
+		"Client process started (pid={})",
+		pi.dwProcessId);
 	SetLauncherStatus(L"Game client launched.");
 	const DWORD quickExitCheck = WaitForSingleObject(pi.hProcess, 100);
 	if (quickExitCheck == WAIT_OBJECT_0) {
 		DWORD exitCode = 0;
 		if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
-			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
-				<< ", exit code=" << exitCode << std::endl;
 			SetLauncherStatus(L"Warning: game exited shortly after launch.");
-			LogUpdateError(
+			LogUpdateWarnFmt(
 				"UF-LAUNCH-QUICKEXIT",
 				"LauncherUpdateCoordinator::LaunchGameClient",
-				"Client exited shortly after launch",
-				std::string("pid=") + std::to_string(pi.dwProcessId) + ", exit_code=" + std::to_string(exitCode));
+				"Client exited shortly after launch (pid={}, exit_code={})",
+				pi.dwProcessId,
+				exitCode);
 		}
 		else {
-			std::cerr << "Client process exited quickly, pid=" << pi.dwProcessId
-				<< ", exit code=<unknown>" << std::endl;
 			SetLauncherStatus(L"Warning: game exited shortly after launch.");
-			LogUpdateError(
+			LogUpdateWarnFmt(
 				"UF-LAUNCH-QUICKEXIT",
 				"LauncherUpdateCoordinator::LaunchGameClient",
-				"Client exited shortly after launch",
-				std::string("pid=") + std::to_string(pi.dwProcessId) + ", exit_code=<unknown>",
+				"Client exited shortly after launch (pid={}, exit_code=<unknown>, win32_code={})",
+				pi.dwProcessId,
 				GetLastError());
 		}
 		notifyLaunchFailureUi();
@@ -310,16 +310,15 @@ void LauncherUpdateCoordinator::UpdateP2PSettings(const P2PSettings& settings)
 		return;
 	}
 
-	std::string details =
-		"enabled=" + std::string(settings.enabled ? "true" : "false") +
-		", signal_endpoint=" + (settings.signalEndpoint.empty() ? std::string("<empty>") : settings.signalEndpoint) +
-		", stun_count=" + std::to_string(settings.stunServers.size()) +
-		", auth_token=" + (settings.signalAuthToken.empty() ? std::string("<empty>") : std::string("<set>"));
-	LogUpdateInfo(
+	LogUpdateInfoFmt(
 		"UF-P2P-CONFIG",
 		"LauncherUpdateCoordinator::UpdateP2PSettings",
-		settings.enabled ? "P2P configuration enabled" : "P2P configuration disabled",
-		details);
+		"{} (enabled={}, signal_endpoint={}, stun_count={}, auth_token={})",
+		(settings.enabled ? "P2P configuration enabled" : "P2P configuration disabled"),
+		(settings.enabled ? "true" : "false"),
+		(settings.signalEndpoint.empty() ? "<empty>" : settings.signalEndpoint.c_str()),
+		settings.stunServers.size(),
+		(settings.signalAuthToken.empty() ? "<empty>" : "<set>"));
 }
 
 P2PSettings LauncherUpdateCoordinator::GetP2PSettings() const

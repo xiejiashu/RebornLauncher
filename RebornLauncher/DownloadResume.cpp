@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 
 #include "Encoding.h"
 #include "FileHash.h"
@@ -117,7 +116,13 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 	bool* queuedForDeferred,
 	bool allowP2P) {
 	std::string strUrl = NormalizeRelativeUrlPath(url);
-	std::cout << __FILE__ << ":" << __LINE__ << " url:" << m_networkState.url << " page:" << strUrl << std::endl;
+	LogUpdateDebugFmt(
+		"UF-DL-START",
+		"LauncherUpdateCoordinator::DownloadWithResume",
+		"DownloadWithResume started (host={}, path={}, file={})",
+		m_networkState.url,
+		strUrl,
+		file_path);
 	const std::wstring filePathW = str2wstr(file_path, static_cast<int>(file_path.length()));
 	if (queuedForDeferred) {
 		*queuedForDeferred = false;
@@ -167,7 +172,7 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 				"UF-DL-RESET",
 				"LauncherUpdateCoordinator::DownloadWithResume",
 				"Failed to reset local file before retry",
-				std::string("file=") + file_path,
+				workthread::loggingdetail::FormatToString("file={}", file_path),
 				GetLastError());
 			return false;
 		}
@@ -176,11 +181,13 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 		ec.clear();
 		const auto afterSize = std::filesystem::file_size(fsPath, ec);
 		if (ec || afterSize != 0) {
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-DL-RESET",
 				"LauncherUpdateCoordinator::DownloadWithResume",
 				"Local file reset verification failed",
-				std::string("file=") + file_path + ", size_after_reset=" + std::to_string(afterSize));
+				"file={}, size_after_reset={}",
+				file_path,
+				afterSize);
 			return false;
 		}
 		return true;
@@ -189,21 +196,26 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 		const auto fsPath = std::filesystem::u8path(file_path);
 		std::error_code ec;
 		if (!std::filesystem::exists(fsPath, ec)) {
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-DL-VERIFY",
 				"LauncherUpdateCoordinator::DownloadWithResume",
 				"Downloaded file is missing after transfer",
-				std::string("url=") + strUrl + ", file=" + file_path);
+				"url={}, file={}",
+				strUrl,
+				file_path);
 			return false;
 		}
 
 		const uint64_t fileSize = std::filesystem::file_size(fsPath, ec);
 		if (ec) {
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-DL-VERIFY",
 				"LauncherUpdateCoordinator::DownloadWithResume",
 				"Failed to read downloaded file size",
-				std::string("url=") + strUrl + ", file=" + file_path + ", error=" + ec.message());
+				"url={}, file={}, error={}",
+				strUrl,
+				file_path,
+				ec.message());
 			return false;
 		}
 
@@ -211,26 +223,30 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 		if (cfg && cfg->m_qwSize > 0) {
 			const uint64_t expectedSize = static_cast<uint64_t>(cfg->m_qwSize);
 			if (fileSize != expectedSize) {
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-DL-VERIFY",
 					"LauncherUpdateCoordinator::DownloadWithResume",
 					"Downloaded file size mismatch",
-					std::string("url=") + strUrl + ", file=" + file_path +
-					", expected_size=" + std::to_string(expectedSize) +
-					", actual_size=" + std::to_string(fileSize));
+					"url={}, file={}, expected_size={}, actual_size={}",
+					strUrl,
+					file_path,
+					expectedSize,
+					fileSize);
 				return false;
 			}
 		}
 		else if (m_downloadState.currentDownloadSize > 0) {
 			const uint64_t expectedSize = static_cast<uint64_t>(m_downloadState.currentDownloadSize);
 			if (fileSize != expectedSize) {
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-DL-VERIFY",
 					"LauncherUpdateCoordinator::DownloadWithResume",
 					"Downloaded file size mismatch (progress state)",
-					std::string("url=") + strUrl + ", file=" + file_path +
-					", expected_size=" + std::to_string(expectedSize) +
-					", actual_size=" + std::to_string(fileSize));
+					"url={}, file={}, expected_size={}, actual_size={}",
+					strUrl,
+					file_path,
+					expectedSize,
+					fileSize);
 				return false;
 			}
 		}
@@ -239,13 +255,15 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 			const std::string actualMd5 = ToLowerAscii(FileHash::file_md5(file_path));
 			const std::string expectedMd5 = ToLowerAscii(cfg->m_strMd5);
 			if (actualMd5.empty() || actualMd5 != expectedMd5) {
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-DL-VERIFY",
 					"LauncherUpdateCoordinator::DownloadWithResume",
 					"Downloaded file MD5 mismatch",
-					std::string("url=") + strUrl + ", file=" + file_path +
-					", expected_md5=" + expectedMd5 +
-					", actual_md5=" + actualMd5);
+					"url={}, file={}, expected_md5={}, actual_md5={}",
+					strUrl,
+					file_path,
+					expectedMd5,
+					actualMd5);
 				return false;
 			}
 		}
@@ -257,20 +275,22 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 		if (p2pDownloaded) {
 			if (verifyDownloadedFile()) {
 				SetLauncherStatus(L"Downloaded via P2P: " + filePathW);
-				LogUpdateInfo(
+				LogUpdateInfoFmt(
 					"UF-P2P-DOWNLOAD",
 					"LauncherUpdateCoordinator::DownloadWithResume",
-					"P2P download succeeded",
-					std::string("url=") + strUrl + ", file=" + file_path);
+					"P2P download succeeded (url={}, file={})",
+					strUrl,
+					file_path);
 				MarkClientDownloadFinished(ownerProcessId);
 				return true;
 			}
 			SetLauncherStatus(L"P2P file verification failed, retrying HTTP...");
-			LogUpdateInfo(
+			LogUpdateInfoFmt(
 				"UF-P2P-FALLBACK",
 				"LauncherUpdateCoordinator::DownloadWithResume",
-				"P2P download verification failed; falling back to HTTP",
-				std::string("url=") + strUrl + ", file=" + file_path);
+				"P2P download verification failed; falling back to HTTP (url={}, file={})",
+				strUrl,
+				file_path);
 			if (!resetLocalFile()) {
 				if (allowDeferredOnBusy && IsFileBusyForWrite(file_path, &busyError) && finishWithDeferred()) {
 					return true;
@@ -280,21 +300,24 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 			}
 		}
 		else {
-			LogUpdateInfo(
+			LogUpdateInfoFmt(
 				"UF-P2P-FALLBACK",
 				"LauncherUpdateCoordinator::DownloadWithResume",
-				"P2P download attempt failed; falling back to HTTP",
-				std::string("url=") + strUrl + ", file=" + file_path);
+				"P2P download attempt failed; falling back to HTTP (url={}, file={})",
+				strUrl,
+				file_path);
 		}
 	}
 
 	if (m_networkState.client == nullptr) {
 		SetLauncherStatus(L"Failed: HTTP client unavailable.");
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-DL-HTTPCLIENT",
 			"LauncherUpdateCoordinator::DownloadWithResume",
 			"HTTP client is not initialized after P2P fallback",
-			std::string("url=") + strUrl + ", file=" + file_path);
+			"url={}, file={}",
+			strUrl,
+			file_path);
 		MarkClientDownloadFinished(ownerProcessId);
 		return false;
 	}
@@ -303,12 +326,14 @@ bool LauncherUpdateCoordinator::DownloadWithResume(
 	for (int attempt = 1; attempt <= 2; ++attempt) {
 		ok = downloader.DownloadHttp(strUrl, file_path, reportProgress);
 		if (!ok) {
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-DL-HTTP",
 				"LauncherUpdateCoordinator::DownloadWithResume",
 				"HTTP resume download failed",
-				std::string("url=") + strUrl + ", file=" + file_path +
-				", attempt=" + std::to_string(attempt));
+				"url={}, file={}, attempt={}",
+				strUrl,
+				file_path,
+				attempt);
 			continue;
 		}
 

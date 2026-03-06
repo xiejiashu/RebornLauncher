@@ -2,7 +2,6 @@
 #include "LauncherUpdateCoordinator.h"
 
 #include <cstring>
-#include <iostream>
 
 #include <wincrypt.h>
 #include <zstd.h>
@@ -11,7 +10,6 @@
 
 void LauncherUpdateCoordinator::HandleError(const char* msg) {
 	const DWORD lastError = GetLastError();
-	std::cerr << msg << " Error: " << lastError << std::endl;
 	LogUpdateError(
 		"UF-CRYPTO-API",
 		"LauncherUpdateCoordinator::HandleError",
@@ -76,12 +74,12 @@ std::string LauncherUpdateCoordinator::DecryptVersionDat(const std::string& ciph
 	const size_t decompressBound = ZSTD_getFrameContentSize(ciphertext.data(), ciphertext.size());
 	if (decompressBound == ZSTD_CONTENTSIZE_ERROR || decompressBound == ZSTD_CONTENTSIZE_UNKNOWN || decompressBound == 0 ||
 		decompressBound > (64ULL * 1024ULL * 1024ULL)) {
-		std::cout << "Invalid Version.dat payload size: " << decompressBound << std::endl;
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-MANIFEST-DECOMPRESS",
 			"LauncherUpdateCoordinator::DecryptVersionDat",
 			"Invalid Version.dat compressed payload size",
-			std::string("size=") + std::to_string(static_cast<unsigned long long>(decompressBound)));
+			"size={}",
+			static_cast<unsigned long long>(decompressBound));
 		return {};
 	}
 
@@ -116,12 +114,12 @@ std::string LauncherUpdateCoordinator::DecryptVersionDat(const std::string& ciph
 	ZSTD_freeDCtx(dctx);
 
 	if (ZSTD_isError(decompressSize) != 0) {
-		std::cout << "Failed to decompress Version.dat: " << ZSTD_getErrorName(decompressSize) << std::endl;
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-MANIFEST-DECOMPRESS",
 			"LauncherUpdateCoordinator::DecryptVersionDat",
 			"Failed to decompress Version.dat",
-			std::string("zstd_error=") + ZSTD_getErrorName(decompressSize));
+			"zstd_error={}",
+			ZSTD_getErrorName(decompressSize));
 		return {};
 	}
 

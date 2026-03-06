@@ -2,7 +2,6 @@
 #include "RuntimeUpdater.h"
 
 #include <algorithm>
-#include <iostream>
 
 #include "Encoding.h"
 #include "LauncherUpdateCoordinator.h"
@@ -51,12 +50,12 @@ bool RuntimeUpdater::Execute() {
 	{
 		auto cfgIt = ResolveFileConfigByPage(m_worker.m_versionState.files, download);
 		if (cfgIt == m_worker.m_versionState.files.end()) {
-			std::cout << "Runtime file not found in manifest file map: " << download << std::endl;
-			m_worker.LogUpdateError(
+			m_worker.LogUpdateErrorDetailsFmt(
 				"UF-RUNTIME-MISSING",
 				"RuntimeUpdater::Execute",
 				"Runtime file is missing from manifest map",
-				std::string("runtime_file=") + download);
+				"runtime_file={}",
+				download);
 			return false;
 		}
 
@@ -64,7 +63,11 @@ bool RuntimeUpdater::Execute() {
 		const VersionConfig& resolvedConfig = cfgIt->second;
 		std::string strLocalFile = resolvedPage;
 		if (m_worker.IsRuntimeUpdateSkipped(strLocalFile)) {
-			std::cout << "Skipping runtime update by NoUPdate.txt: " << strLocalFile << std::endl;
+			m_worker.LogUpdateInfoFmt(
+				"UF-RUNTIME-SKIP",
+				"RuntimeUpdater::Execute",
+				"Skipping runtime update by bootstrap local_only_files (file={})",
+				strLocalFile);
 			m_worker.SetLauncherStatus(L"Up to date: " + str2wstr(strLocalFile));
 			m_worker.m_downloadState.currentDownload += 1;
 			continue;
@@ -74,11 +77,19 @@ bool RuntimeUpdater::Execute() {
 			m_worker.m_networkState.page,
 			std::to_string(resolvedConfig.m_qwTime) + "/" + resolvedPage);
 
-		std::cout << "Updating runtime file from: " << strPage << std::endl;
+		m_worker.LogUpdateDebugFmt(
+			"UF-RUNTIME-URL",
+			"RuntimeUpdater::Execute",
+			"Runtime file download URL prepared (remote_path={})",
+			strPage);
 		m_worker.SetCurrentDownloadFile(str2wstr(strLocalFile, strLocalFile.length()));
 		m_worker.m_downloadState.currentDownloadSize = resolvedConfig.m_qwSize;
 		m_worker.m_downloadState.currentDownloadProgress = 0;
-		std::cout << "Updating local runtime file: " << strLocalFile << std::endl;
+		m_worker.LogUpdateDebugFmt(
+			"UF-RUNTIME-FILE",
+			"RuntimeUpdater::Execute",
+			"Runtime file update started (local_file={})",
+			strLocalFile);
 		m_worker.SetLauncherStatus(L"Downloading update: " + str2wstr(strLocalFile));
 
 		if (strLocalFile.find("RebornLauncher.exe") != std::string::npos)
@@ -109,16 +120,21 @@ bool RuntimeUpdater::Execute() {
 
 		bool queuedForDeferred = false;
 		if (!m_worker.DownloadWithResume(strPage, strLocalFile, 0, allowDeferredOnBusy, &queuedForDeferred)) {
-			std::cout << "Download failed for runtime file: " << strPage << std::endl;
-			m_worker.LogUpdateError(
+			m_worker.LogUpdateErrorDetailsFmt(
 				"UF-RUNTIME-DOWNLOAD",
 				"RuntimeUpdater::Execute",
 				"Runtime file download failed",
-				std::string("remote_path=") + strPage + ", local_file=" + strLocalFile);
+				"remote_path={}, local_file={}",
+				strPage,
+				strLocalFile);
 			return false;
 		}
 		if (queuedForDeferred) {
-			std::cout << "Runtime file is busy, queued for deferred retry: " << strLocalFile << std::endl;
+			m_worker.LogUpdateWarnFmt(
+				"UF-RUNTIME-DEFERRED",
+				"RuntimeUpdater::Execute",
+				"Runtime file is busy and queued for deferred retry (local_file={})",
+				strLocalFile);
 		}
 		m_worker.m_downloadState.currentDownload += 1;
 	}

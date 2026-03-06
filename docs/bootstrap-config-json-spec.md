@@ -6,11 +6,12 @@ This document defines the JSON payload to encrypt and publish at:
 
 Launcher flow:
 
-1. Download `ReadMe.txt`.
-2. Decode hex payload to bytes.
-3. AES decrypt bytes (same key as current launcher).
-4. Parse decrypted plaintext as JSON.
-5. Use JSON fields to drive signal/STUN/download behavior.
+1. If local `Bootstrap.json` exists in launcher working directory, parse and use it first.
+2. Otherwise download remote bootstrap (`ReadMe.txt` / `RemoteEncrypt.txt`).
+3. Decode hex payload to bytes.
+4. AES decrypt bytes (same key as current launcher).
+5. Parse decrypted plaintext as JSON.
+6. Use JSON fields to drive signal/STUN/download behavior.
 
 ## Recommended JSON Structure
 
@@ -33,6 +34,11 @@ Launcher flow:
       "stun:stun.l.google.com:19302"
     ]
   },
+  "logLevel": 3,
+  "local_only_files": [
+    "RebornLauncher.exe",
+    "boilerplate.dll"
+  ],
   "meta": {
     "channel": "live",
     "generated_at": "2026-02-08T13:50:00+09:00"
@@ -62,7 +68,7 @@ Launcher flow:
 
 - `p2p.signal_url`:
   - optional
-  - if launcher/UI didn’t set signal endpoint locally, this value is used
+  - if launcher/UI didn't set signal endpoint locally, this value is used
 
 - `p2p.signal_auth_token`:
   - optional
@@ -72,6 +78,20 @@ Launcher flow:
   - optional array
   - merged into local STUN list (de-duplicated, remote list priority)
 
+- `logLevel`:
+  - optional integer
+  - launcher logging threshold:
+    - `1` = Debug
+    - `2` = Info
+    - `3` = Warn
+    - `4` = Error
+  - default: `3` when missing or when local bootstrap is absent
+
+- `local_only_files`:
+  - optional array of relative file paths
+  - files listed here are skipped by runtime updater (local-only)
+  - replaces legacy `NoUPdate.txt` behavior
+
 ## Compatibility
 
 - `content` missing:
@@ -79,6 +99,9 @@ Launcher flow:
 
 - `version_manifest_url` missing:
   - launcher checks `version_dat_url` fallback key.
+
+- `logLevel` / `local_only_files` missing:
+  - launcher uses default logging threshold (`3`) and applies no local-only skip list.
 
 ## Publishing Format
 

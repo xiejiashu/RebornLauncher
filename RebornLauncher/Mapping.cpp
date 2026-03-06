@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <iostream>
 #include <sstream>
 
 #include <json/json.h>
@@ -76,7 +75,10 @@ void LauncherUpdateCoordinator::WriteVersionToMapping(std::string& m_strRemoteVe
 	std::string errors;
 	std::istringstream manifestStream(m_strRemoteVersionJson);
 	if (!Json::parseFromStream(readerBuilder, manifestStream, &manifestRoot, &errors) || !manifestRoot.isObject()) {
-		std::cout << "WriteVersionToMapping: invalid manifest json." << std::endl;
+		LogUpdateWarn(
+			"UF-MAP-MANIFEST",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"Skip mapping publish: invalid manifest json");
 		return;
 	}
 
@@ -84,7 +86,11 @@ void LauncherUpdateCoordinator::WriteVersionToMapping(std::string& m_strRemoteVe
 	std::error_code ec;
 	const std::filesystem::path currentDir = std::filesystem::current_path(ec);
 	if (ec) {
-		std::cout << "WriteVersionToMapping: failed to get current path." << std::endl;
+		LogUpdateError(
+			"UF-MAP-PATH",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"Failed to resolve current path for mapping publish",
+			ec.message());
 		return;
 	}
 
@@ -105,7 +111,11 @@ void LauncherUpdateCoordinator::WriteVersionToMapping(std::string& m_strRemoteVe
 				}
 			}
 			catch (...) {
-				std::cout << "WriteVersionToMapping: skip invalid page path: " << page << std::endl;
+				LogUpdateWarnFmt(
+					"UF-MAP-PATH",
+					"LauncherUpdateCoordinator::WriteVersionToMapping",
+					"Skip invalid page path while building mapping payload (page={})",
+					page);
 			}
 		}
 	}
@@ -121,11 +131,19 @@ void LauncherUpdateCoordinator::WriteVersionToMapping(std::string& m_strRemoteVe
 
 	const std::string payload = payloadBuilder.str();
 	if (payload.empty()) {
-		std::cout << "WriteVersionToMapping: empty payload." << std::endl;
+		LogUpdateWarn(
+			"UF-MAP-EMPTY",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"Skip mapping publish: empty payload");
 		return;
 	}
 	if (payload.size() + 1 > kVersionMapMaxBytes) {
-		std::cout << "WriteVersionToMapping: payload too large, bytes=" << payload.size() << std::endl;
+		LogUpdateErrorDetailsFmt(
+			"UF-MAP-SIZE",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"Mapping payload too large",
+			"bytes={}",
+			payload.size());
 		return;
 	}
 
@@ -142,13 +160,23 @@ void LauncherUpdateCoordinator::WriteVersionToMapping(std::string& m_strRemoteVe
 		static_cast<DWORD>(payload.size() + 1),
 		kVersionMapMappingName);
 	if (!m_runtimeState.mappingVersion) {
-		std::cout << "WriteVersionToMapping: CreateFileMappingA failed, error=" << GetLastError() << std::endl;
+		LogUpdateError(
+			"UF-MAP-CREATE",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"CreateFileMappingA failed for version mapping",
+			workthread::loggingdetail::FormatToString("mapping_name={}", kVersionMapMappingName),
+			GetLastError());
 		return;
 	}
 
 	void* view = MapViewOfFile(m_runtimeState.mappingVersion, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 	if (!view) {
-		std::cout << "WriteVersionToMapping: MapViewOfFile failed, error=" << GetLastError() << std::endl;
+		LogUpdateError(
+			"UF-MAP-VIEW",
+			"LauncherUpdateCoordinator::WriteVersionToMapping",
+			"MapViewOfFile failed for version mapping",
+			workthread::loggingdetail::FormatToString("mapping_name={}", kVersionMapMappingName),
+			GetLastError());
 		CloseHandle(m_runtimeState.mappingVersion);
 		m_runtimeState.mappingVersion = nullptr;
 		return;

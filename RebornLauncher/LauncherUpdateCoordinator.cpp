@@ -3,7 +3,6 @@
 
 #include <filesystem>
 #include <httplib.h>
-#include <iostream>
 #include <random>
 #include <shellapi.h>
 #include <thread>
@@ -58,7 +57,7 @@ std::string ResolveBasePackageP2PResourcePath(const std::string& configuredPacka
 	return {};
 }
 
-std::string NormalizeNoUpdatePathKey(std::string value) {
+std::string NormalizeLocalOnlyPathKey(std::string value) {
 	value = TrimAscii(std::move(value));
 	if (value.empty()) {
 		return {};
@@ -209,14 +208,13 @@ bool LauncherUpdateCoordinator::InitializeDownloadEnvironment()
 		p2pSignalEndpoint = m_networkState.p2pSettings.signalEndpoint;
 		stunCount = m_networkState.p2pSettings.stunServers.size();
 	}
-	LogUpdateInfo(
+	LogUpdateInfoFmt(
 		"UF-P2P-INIT",
 		"LauncherUpdateCoordinator::InitializeDownloadEnvironment",
-		"P2P settings prepared",
-		"enabled=" + std::string(p2pEnabled ? "true" : "false") +
-		", signal_endpoint=" + (p2pSignalEndpoint.empty() ? std::string("<empty>") : p2pSignalEndpoint) +
-		", stun_count=" + std::to_string(stunCount) +
-		", stun_used_by_current_p2p_client=false");
+		"P2P settings prepared (enabled={}, signal_endpoint={}, stun_count={}, stun_used_by_current_p2p_client=false)",
+		(p2pEnabled ? "true" : "false"),
+		(p2pSignalEndpoint.empty() ? "<empty>" : p2pSignalEndpoint.c_str()),
+		stunCount);
 
 	m_networkState.client = std::make_unique<httplib::Client>(m_networkState.url);
 	m_networkState.client->set_follow_location(true);
@@ -241,60 +239,14 @@ void LauncherUpdateCoordinator::LoadLocalVersionState()
 {
 	workthread::versionload::LocalVersionLoader loader(*this);
 	loader.Execute();
-	LoadNoUpdateList();
-}
-
-void LauncherUpdateCoordinator::LoadNoUpdateList() {
-	m_versionState.noUpdateFiles.clear();
-
-	std::error_code ec;
-	const std::filesystem::path listPath =
-		std::filesystem::current_path(ec) / std::filesystem::u8path("NoUPdate.txt");
-	if (ec) {
-		return;
-	}
-
-	std::ifstream in(listPath, std::ios::binary);
-	if (!in.is_open()) {
-		return;
-	}
-
-	std::string line;
-	size_t lineNumber = 0;
-	while (std::getline(in, line)) {
-		++lineNumber;
-		if (lineNumber == 1 && line.size() >= 3 &&
-			static_cast<unsigned char>(line[0]) == 0xEF &&
-			static_cast<unsigned char>(line[1]) == 0xBB &&
-			static_cast<unsigned char>(line[2]) == 0xBF) {
-			line.erase(0, 3);
-		}
-
-		std::string trimmed = TrimAscii(line);
-		if (trimmed.empty()) {
-			continue;
-		}
-		if (trimmed[0] == '#' || trimmed[0] == ';') {
-			continue;
-		}
-
-		const std::string key = NormalizeNoUpdatePathKey(trimmed);
-		if (!key.empty()) {
-			m_versionState.noUpdateFiles.insert(key);
-		}
-	}
-
-	if (!m_versionState.noUpdateFiles.empty()) {
-		std::cout << "NoUPdate.txt loaded, skip entries: " << m_versionState.noUpdateFiles.size() << std::endl;
-	}
 }
 
 bool LauncherUpdateCoordinator::IsRuntimeUpdateSkipped(const std::string& localPath) const {
-	const std::string key = NormalizeNoUpdatePathKey(localPath);
+	const std::string key = NormalizeLocalOnlyPathKey(localPath);
 	if (key.empty()) {
 		return false;
 	}
-	return m_versionState.noUpdateFiles.find(key) != m_versionState.noUpdateFiles.end();
+	return m_versionState.localOnlyFiles.find(key) != m_versionState.localOnlyFiles.end();
 }
 
 void LauncherUpdateCoordinator::RefreshRemoteManifestIfChanged()
@@ -329,9 +281,15 @@ void LauncherUpdateCoordinator::RefreshRemoteManifestIfChanged()
 	}
 
 	if (strRemoteVersionDatMD5.empty()) {
-		std::cout << "Version.dat.md5 unavailable, fallback to direct Version.dat fetch." << std::endl;
+		LogUpdateWarnFmt(
+			"UF-MANIFEST-MD5",
+			"LauncherUpdateCoordinator::RefreshRemoteManifestIfChanged",
+			"Version.dat.md5 is unavailable; fallback to direct Version.dat refresh");
 		if (!RefreshRemoteVersionManifest()) {
-			std::cout << "Direct Version.dat fetch fallback failed." << std::endl;
+			LogUpdateWarnFmt(
+				"UF-MANIFEST-MD5",
+				"LauncherUpdateCoordinator::RefreshRemoteManifestIfChanged",
+				"Direct Version.dat fallback refresh failed");
 		}
 		return;
 	}
@@ -357,11 +315,12 @@ bool LauncherUpdateCoordinator::HandleSelfUpdateAndExit()
 		SW_SHOWNORMAL);
 	if (reinterpret_cast<INT_PTR>(launchResult) <= 32) {
 		SetLauncherStatus(L"Failed: launcher self-update relaunch.");
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-SELFUPDATE-LAUNCH",
 			"LauncherUpdateCoordinator::HandleSelfUpdateAndExit",
 			"Failed to relaunch UpdateTemp.exe",
-			"shell_execute=UpdateTemp.exe");
+			"shell_execute={}",
+			"UpdateTemp.exe");
 		m_selfUpdateState.updateSelf = false;
 		return false;
 	}
@@ -375,18 +334,11 @@ bool LauncherUpdateCoordinator::HandleSelfUpdateAndExit()
 bool LauncherUpdateCoordinator::PublishMappingsAndLaunchInitialClient()
 {
 	// unsigned long long dwTick = GetTickCount64();
-	// WriteDataToMapping(); 不写入映射了，直接让客户端从文件读取，减少一次内存拷贝和映射资源占用
-
-	// unsigned long long dwNewTick = GetTickCount64();
-	// std::cout << "WriteDataToMapping elapsed ms: " << dwNewTick - dwTick << std::endl;
-	// dwTick = dwNewTick;
+	// WriteDataToMapping(); // Disabled: client reads manifest data from file directly.
 
 	if (!LaunchGameClient()) {
 		return false;
 	}
-
-	// dwNewTick = GetTickCount64();
-	// std::cout << "CreateProcess elapsed ms: " << dwNewTick - dwTick << std::endl;
 	return true;
 }
 
@@ -451,7 +403,10 @@ bool LauncherUpdateCoordinator::DownloadBasePackage()
 	m_downloadState.currentDownload = 0;
 
 	if (m_versionState.basePackageUrls.empty()) {
-		std::cout << "Bootstrap config missing base_package_urls/base_package_url." << std::endl;
+		LogUpdateError(
+			"UF-BASE-URLS",
+			"LauncherUpdateCoordinator::DownloadBasePackage",
+			"Bootstrap config missing base_package_urls/base_package_url");
 		return false;
 	}
 
@@ -478,39 +433,46 @@ bool LauncherUpdateCoordinator::DownloadBasePackage()
 				[](uint64_t, uint64_t) {});
 			if (downloaded) {
 				if (!VerifyArchiveReadable(localArchivePath)) {
-					std::cout << "P2P base package failed archive verification: " << localArchivePath << std::endl;
-					LogUpdateInfo(
+					LogUpdateWarnFmt(
 						"UF-P2P-FALLBACK",
 						"LauncherUpdateCoordinator::DownloadBasePackage",
-						"P2P base package verification failed; falling back to HTTP",
-						std::string("resource=") + p2pResourcePath + ", file=" + localArchivePath);
+						"P2P base package verification failed; falling back to HTTP (resource={}, file={})",
+						p2pResourcePath,
+						localArchivePath);
 					std::error_code ec;
 					std::filesystem::remove(std::filesystem::u8path(localArchivePath), ec);
 					downloaded = false;
 				}
 				else {
-					LogUpdateInfo(
+					LogUpdateInfoFmt(
 						"UF-P2P-DOWNLOAD",
 						"LauncherUpdateCoordinator::DownloadBasePackage",
-						"P2P base package download succeeded",
-						std::string("resource=") + p2pResourcePath + ", file=" + localArchivePath);
+						"P2P base package download succeeded (resource={}, file={})",
+						p2pResourcePath,
+						localArchivePath);
 					downloadedArchivePath = localArchivePath;
 					break;
 				}
 			}
 			else {
-				LogUpdateInfo(
+				LogUpdateInfoFmt(
 					"UF-P2P-FALLBACK",
 					"LauncherUpdateCoordinator::DownloadBasePackage",
-					"P2P base package attempt failed; falling back to HTTP",
-					std::string("resource=") + p2pResourcePath + ", file=" + localArchivePath);
+					"P2P base package attempt failed; falling back to HTTP (resource={}, file={})",
+					p2pResourcePath,
+					localArchivePath);
 			}
 		}
 
 		downloaded = DownloadFileChunkedWithResume(absolutePackageUrl, localArchivePath, 2);
 		if (downloaded) {
 			if (!VerifyArchiveReadable(localArchivePath)) {
-				std::cout << "HTTP base package failed archive verification: " << localArchivePath << std::endl;
+				LogUpdateWarnFmt(
+					"UF-BASE-VERIFY",
+					"LauncherUpdateCoordinator::DownloadBasePackage",
+					"HTTP base package verification failed; trying next candidate (file={}, url={})",
+					localArchivePath,
+					absolutePackageUrl);
 				std::error_code ec;
 				std::filesystem::remove(std::filesystem::u8path(localArchivePath), ec);
 				downloaded = false;
@@ -523,17 +485,20 @@ bool LauncherUpdateCoordinator::DownloadBasePackage()
 	}
 
 	if (!downloaded) {
-		std::cout << "Base package download failed for all candidates." << std::endl;
+		LogUpdateError(
+			"UF-BASE-DOWNLOAD",
+			"LauncherUpdateCoordinator::DownloadBasePackage",
+			"Base package download failed for all candidates");
 		return false;
 	}
 
 	if (!Extract7z(downloadedArchivePath, "./")) {
-		std::cout << "Base package extraction failed: " << downloadedArchivePath << std::endl;
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-BASE-EXTRACT",
 			"LauncherUpdateCoordinator::DownloadBasePackage",
 			"Base package extraction failed",
-			std::string("archive=") + downloadedArchivePath);
+			"archive={}",
+			downloadedArchivePath);
 		return false;
 	}
 	MarkFileHidden(downloadedArchivePath);

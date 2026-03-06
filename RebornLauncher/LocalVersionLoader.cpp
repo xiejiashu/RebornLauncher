@@ -3,7 +3,6 @@
 
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <sstream>
 
 #include <json/json.h>
@@ -73,7 +72,11 @@ void LocalVersionLoader::Execute() {
 			}
 		}
 		catch (...) {
-			std::cout << "Skip invalid local page path: " << config.m_strPage << std::endl;
+			m_worker.LogUpdateWarnFmt(
+				"UF-LOCAL-MANIFEST-PATH",
+				"workthread::versionload::LocalVersionLoader::Execute",
+				"Skip invalid local page path from Version.dat (page={})",
+				config.m_strPage);
 			m_worker.m_versionState.files.erase(config.m_strPage);
 		}
 	}

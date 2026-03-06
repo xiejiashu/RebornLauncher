@@ -5,7 +5,6 @@
 #include <cctype>
 #include <condition_variable>
 #include <deque>
-#include <iostream>
 #include <thread>
 #include <unordered_set>
 
@@ -117,13 +116,14 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			SetLauncherStatus(L"Received file download request from client...");
 			g_bRendering = true;
 		}
-		LogUpdateInfo(
+		LogUpdateInfoFmt(
 			"UF-WS-DL-REQUEST",
 			isAsync ? "LauncherUpdateCoordinator::WebServiceThread:/download-async"
 			        : "LauncherUpdateCoordinator::WebServiceThread:/download",
-			"Client requested file download",
-			std::string("page=") + strPage + ", pid=" + std::to_string(requestPid) +
-			", async=" + (isAsync ? "true" : "false"));
+			"Client requested file download (page={}, pid={}, async={})",
+			strPage,
+			requestPid,
+			(isAsync ? "true" : "false"));
 		m_downloadState.totalDownload = 1;
 		m_downloadState.currentDownload = 0;
 
@@ -137,12 +137,14 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			MarkClientDownloadFinished(requestPid);
 			outcome.status = 404;
 			outcome.body = "Not Found";
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-WS-NOTFOUND",
 				isAsync ? "LauncherUpdateCoordinator::WebServiceThread:/download-async"
 				        : "LauncherUpdateCoordinator::WebServiceThread:/download",
 				"Requested file not found in manifest",
-				std::string("page=") + strPage + ", pid=" + std::to_string(requestPid));
+				"page={}, pid={}",
+				strPage,
+				requestPid);
 			return outcome;
 		}
 
@@ -175,14 +177,15 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			outcome.body = queuedForDeferred ? "DEFERRED" : "OK";
 			outcome.success = true;
 			outcome.resolvedPage = resolvedPage;
-			LogUpdateInfo(
+			LogUpdateInfoFmt(
 				"UF-WS-DL-SUCCESS",
 				isAsync ? "LauncherUpdateCoordinator::WebServiceThread:/download-async"
 				        : "LauncherUpdateCoordinator::WebServiceThread:/download",
-				"Client file download completed",
-				std::string("page=") + resolvedPage + ", pid=" + std::to_string(requestPid) +
-				", async=" + (isAsync ? "true" : "false") +
-				", deferred=" + (queuedForDeferred ? "true" : "false"));
+				"Client file download completed (page={}, pid={}, async={}, deferred={})",
+				resolvedPage,
+				requestPid,
+				(isAsync ? "true" : "false"),
+				(queuedForDeferred ? "true" : "false"));
 			if (!isAsync) {
 				PostMessage(m_runtimeState.mainWnd, WM_HIDE_AFTER_DOWNLOAD, 0, 0);
 				SetForegroundWindow(FindGameWindowByProcessId(m_runtimeState.gameInfos, requestPid));
@@ -199,12 +202,14 @@ void LauncherUpdateCoordinator::WebServiceThread()
 		}
 		outcome.status = 502;
 		outcome.body = "Download Failed";
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-WS-DOWNLOAD",
 			isAsync ? "LauncherUpdateCoordinator::WebServiceThread:/download-async"
 			        : "LauncherUpdateCoordinator::WebServiceThread:/download",
 			"Client file download failed",
-			std::string("page=") + resolvedPage + ", pid=" + std::to_string(requestPid));
+			"page={}, pid={}",
+			resolvedPage,
+			requestPid);
 		return outcome;
 	};
 
@@ -227,12 +232,14 @@ void LauncherUpdateCoordinator::WebServiceThread()
 
 			DownloadRequestOutcome outcome = executeClientDownload(task.page, task.pid, true);
 			if (!outcome.success) {
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-WS-ASYNC",
 					"LauncherUpdateCoordinator::WebServiceThread:/download-async-worker",
 					"Queued async file update failed",
-					std::string("page=") + task.page + ", pid=" + std::to_string(task.pid) +
-					", status=" + std::to_string(outcome.status));
+					"page={}, pid={}, status={}",
+					task.page,
+					task.pid,
+					outcome.status);
 			}
 			{
 				std::lock_guard<std::mutex> lock(asyncQueueMutex);
@@ -288,7 +295,10 @@ void LauncherUpdateCoordinator::WebServiceThread()
 
 		svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
 			(void)req;
-			std::cout << "RunClient request" << std::endl;
+			LogUpdateInfoFmt(
+				"UF-WS-RUNCLIENT",
+				"LauncherUpdateCoordinator::WebServiceThread:/RunClient",
+				"RunClient request received");
 			std::lock_guard<std::mutex> flowGuard(m_launchFlowMutex);
 			SetLauncherStatus(L"RunClient requested: checking updates...");
 			if (!RefreshRemoteVersionManifest()) {
@@ -346,7 +356,6 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			break;
 		}
 		if (!listening) {
-			std::cout << "Web service listen failed, retrying..." << std::endl;
 			SetLauncherStatus(L"Retrying local HTTP service...");
 			LogUpdateError(
 				"UF-WS-LISTEN",
@@ -355,7 +364,6 @@ void LauncherUpdateCoordinator::WebServiceThread()
 				"listen(localhost:12345) returned false.");
 		}
 		else {
-			std::cout << "Web service stopped unexpectedly, restarting..." << std::endl;
 			SetLauncherStatus(L"Restarting local HTTP service...");
 			LogUpdateError(
 				"UF-WS-RESTART",
@@ -374,5 +382,8 @@ void LauncherUpdateCoordinator::WebServiceThread()
 	if (asyncWorker.joinable()) {
 		asyncWorker.join();
 	}
-	std::cout << "Web service thread finished" << std::endl;
+	LogUpdateInfoFmt(
+		"UF-WS-STOP",
+		"LauncherUpdateCoordinator::WebServiceThread",
+		"Web service thread finished");
 }

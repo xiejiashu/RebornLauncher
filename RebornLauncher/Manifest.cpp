@@ -3,9 +3,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <regex>
 #include <sstream>
 #include <unordered_map>
@@ -47,6 +47,62 @@ std::string ToLowerAscii(std::string value) {
 		return static_cast<char>(ch);
 	});
 	return value;
+}
+
+std::string NormalizeLocalOnlyPathKey(std::string value) {
+	value = TrimAscii(std::move(value));
+	if (value.empty()) {
+		return {};
+	}
+
+	std::replace(value.begin(), value.end(), '\\', '/');
+	while (value.rfind("./", 0) == 0) {
+		value.erase(0, 2);
+	}
+	while (!value.empty() && value.front() == '/') {
+		value.erase(value.begin());
+	}
+
+	try {
+		std::filesystem::path normalizedPath = std::filesystem::u8path(value).lexically_normal();
+		std::string key = normalizedPath.generic_string();
+		while (key.rfind("./", 0) == 0) {
+			key.erase(0, 2);
+		}
+		while (!key.empty() && key.front() == '/') {
+			key.erase(key.begin());
+		}
+		std::replace(key.begin(), key.end(), '/', '\\');
+		return ToLowerAscii(std::move(key));
+	}
+	catch (...) {
+		return {};
+	}
+}
+
+int ParseBootstrapLogLevel(const Json::Value& root, bool& explicitConfigured) {
+	explicitConfigured = false;
+	int logLevel = static_cast<int>(UpdateLogLevel::Warn);
+	const Json::Value logLevelJson = root["logLevel"];
+	if (logLevelJson.isNull()) {
+		return logLevel;
+	}
+
+	explicitConfigured = true;
+	if (logLevelJson.isInt()) {
+		logLevel = logLevelJson.asInt();
+	}
+	else if (logLevelJson.isString()) {
+		const std::string trimmed = TrimAscii(logLevelJson.asString());
+		if (!trimmed.empty()) {
+			char* endPtr = nullptr;
+			const long parsed = std::strtol(trimmed.c_str(), &endPtr, 10);
+			if (endPtr != nullptr && *endPtr == '\0') {
+				logLevel = static_cast<int>(parsed);
+			}
+		}
+	}
+	return logLevel;
 }
 
 std::string NormalizeManifestPathKey(std::string path) {
@@ -197,15 +253,60 @@ std::vector<std::string> BuildPrelaunchSyncList(
 bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 {
 	SetLauncherStatus(L"Fetching bootstrap configuration...");
-	std::cout << "FetchBootstrapConfig" << std::endl;
+	LogUpdateDebugFmt(
+		"UF-BOOTSTRAP-START",
+		"LauncherUpdateCoordinator::FetchBootstrapConfig",
+		"Bootstrap fetch started");
 
 	auto applyBootstrapRoot = [this](const Json::Value& root, const char* sourceTag) -> bool {
+		bool explicitLogLevel = false;
+		int parsedLogLevel = ParseBootstrapLogLevel(root, explicitLogLevel);
+		if (parsedLogLevel < static_cast<int>(UpdateLogLevel::Debug) ||
+			parsedLogLevel > static_cast<int>(UpdateLogLevel::Error)) {
+			LogUpdateWarnFmt(
+				"UF-BOOTSTRAP-LOGLEVEL",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Invalid bootstrap logLevel, defaulting to WARN (source={}, logLevel={})",
+				sourceTag,
+				parsedLogLevel);
+			parsedLogLevel = static_cast<int>(UpdateLogLevel::Warn);
+		}
+		SetLogLevel(parsedLogLevel);
+
+		m_versionState.localOnlyFiles.clear();
+		const Json::Value localOnlyFiles = root["local_only_files"];
+		if (localOnlyFiles.isArray()) {
+			for (const auto& item : localOnlyFiles) {
+				if (!item.isString()) {
+					continue;
+				}
+				const std::string key = NormalizeLocalOnlyPathKey(item.asString());
+				if (!key.empty()) {
+					m_versionState.localOnlyFiles.insert(key);
+				}
+			}
+		}
+		if (!m_versionState.localOnlyFiles.empty()) {
+			LogUpdateInfoFmt(
+				"UF-BOOTSTRAP-LOCALONLY",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Bootstrap local_only_files loaded (source={}, count={})",
+				sourceTag,
+				m_versionState.localOnlyFiles.size());
+		}
+		LogUpdateDebugFmt(
+			"UF-BOOTSTRAP-LOGLEVEL",
+			"LauncherUpdateCoordinator::FetchBootstrapConfig",
+			"Bootstrap log level applied (source={}, explicit={}, level={})",
+			sourceTag,
+			(explicitLogLevel ? "true" : "false"),
+			GetLogLevel());
+
 		Json::Value content = root["content"];
 		if (!content.isObject()) {
 			content = root["download"];
 		}
 		if (!content.isObject()) {
-			std::cout << "Bootstrap JSON missing content/download object." << std::endl;
 			SetLauncherStatus(L"Failed: malformed bootstrap content.");
 			LogUpdateError(
 				"UF-BOOTSTRAP-FIELD",
@@ -220,7 +321,6 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 			versionManifestUrl = TrimAscii(content["version_dat_url"].asString());
 		}
 		if (versionManifestUrl.empty()) {
-			std::cout << "Bootstrap JSON missing version_manifest_url." << std::endl;
 			SetLauncherStatus(L"Failed: missing manifest URL in bootstrap.");
 			LogUpdateError(
 				"UF-BOOTSTRAP-FIELD",
@@ -251,13 +351,13 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 		const bool versionManifestIsAbsolute = IsHttpUrl(versionManifestUrl);
 		if (versionManifestIsAbsolute) {
 			if (!ExtractBaseAndPath(versionManifestUrl, versionBaseUrl, versionPath)) {
-				std::cout << "Invalid version_manifest_url: " << versionManifestUrl << std::endl;
 				SetLauncherStatus(L"Failed: invalid manifest URL.");
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-BOOTSTRAP-URL",
 					"LauncherUpdateCoordinator::FetchBootstrapConfig",
 					"Invalid version manifest URL format",
-					std::string("version_manifest_url=") + versionManifestUrl);
+					"version_manifest_url={}",
+					versionManifestUrl);
 				return false;
 			}
 			m_versionState.manifestPath = versionManifestUrl;
@@ -265,13 +365,13 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 
 		if (!updateRootUrl.empty() && IsHttpUrl(updateRootUrl)) {
 			if (!ExtractBaseAndPath(updateRootUrl, m_networkState.url, m_networkState.page)) {
-				std::cout << "Invalid update_package_root_url: " << updateRootUrl << std::endl;
 				SetLauncherStatus(L"Failed: invalid update root URL.");
-				LogUpdateError(
+				LogUpdateErrorDetailsFmt(
 					"UF-BOOTSTRAP-URL",
 					"LauncherUpdateCoordinator::FetchBootstrapConfig",
 					"Invalid update root URL format",
-					std::string("update_package_root_url=") + updateRootUrl);
+					"update_package_root_url={}",
+					updateRootUrl);
 				return false;
 			}
 		}
@@ -280,7 +380,6 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 				m_networkState.url = versionBaseUrl;
 			}
 			else if (m_networkState.url.empty()) {
-				std::cout << "Relative update_package_root_url requires absolute version_manifest_url." << std::endl;
 				SetLauncherStatus(L"Failed: unresolved relative update URL.");
 				LogUpdateError(
 					"UF-BOOTSTRAP-URL",
@@ -299,7 +398,6 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 			m_networkState.page = DirnamePath(versionPath);
 		}
 		else {
-			std::cout << "Bootstrap JSON cannot resolve download host/path." << std::endl;
 			SetLauncherStatus(L"Failed: cannot resolve download host.");
 			LogUpdateError(
 				"UF-BOOTSTRAP-URL",
@@ -333,7 +431,6 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 		}
 
 		if (m_versionState.basePackageUrls.empty()) {
-			std::cout << "Bootstrap JSON missing base_package_urls/base_package_url." << std::endl;
 			SetLauncherStatus(L"Failed: missing base package URL.");
 			LogUpdateError(
 				"UF-BOOTSTRAP-FIELD",
@@ -364,9 +461,14 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 			}
 		}
 
-		std::cout << "Bootstrap resolved (" << sourceTag << "): host=" << m_networkState.url
-			<< " updateRoot=" << m_networkState.page
-			<< " versionPath=" << m_versionState.manifestPath << std::endl;
+		LogUpdateInfoFmt(
+			"UF-BOOTSTRAP-RESOLVED",
+			"LauncherUpdateCoordinator::FetchBootstrapConfig",
+			"Bootstrap configuration resolved (source={}, host={}, update_root={}, manifest_path={})",
+			sourceTag,
+			m_networkState.url,
+			m_networkState.page,
+			m_versionState.manifestPath);
 		SetLauncherStatus(L"Bootstrap configuration ready.");
 		return true;
 	};
@@ -377,13 +479,13 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 	if (hasLocalBootstrap) {
 		std::ifstream localStream(localBootstrapPath, std::ios::binary);
 		if (!localStream.is_open()) {
-			std::cout << "Failed to open local bootstrap file: " << localBootstrapPath.string() << std::endl;
 			SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-BOOTSTRAP-LOCAL",
 				"LauncherUpdateCoordinator::FetchBootstrapConfig",
 				"Cannot open local bootstrap file",
-				std::string("path=") + localBootstrapPath.string());
+				"path={}",
+				localBootstrapPath.string());
 			return false;
 		}
 
@@ -400,21 +502,21 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 		Json::Value localRoot;
 		Json::Reader reader;
 		if (!reader.parse(localJsonText, localRoot) || !localRoot.isObject()) {
-			std::cout << "Local Bootstrap.json is not valid JSON." << std::endl;
 			SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
-			LogUpdateError(
+			LogUpdateErrorDetailsFmt(
 				"UF-BOOTSTRAP-JSON",
 				"LauncherUpdateCoordinator::FetchBootstrapConfig",
 				"Local bootstrap payload parse failed",
-				std::string("path=") + localBootstrapPath.string());
+				"path={}",
+				localBootstrapPath.string());
 			return false;
 		}
 
-		LogUpdateInfo(
+		LogUpdateInfoFmt(
 			"UF-BOOTSTRAP-SOURCE",
 			"LauncherUpdateCoordinator::FetchBootstrapConfig",
-			"Using local bootstrap configuration",
-			std::string("path=") + localBootstrapPath.string());
+			"Using local bootstrap configuration (path={})",
+			localBootstrapPath.string());
 		return applyBootstrapRoot(localRoot, "local");
 	}
 
@@ -422,24 +524,24 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 	auto res = cli.Get(kBootstrapPath);
 	if (!res || res->status != 200) {
 		SetLauncherStatus(L"Failed: bootstrap configuration request.");
+		const std::string hostPathDetails =
+			workthread::loggingdetail::FormatToString("host={}, path={}", kBootstrapHost, kBootstrapPath);
 		if (res) {
-			std::cout << "Failed to fetch bootstrap payload, status: " << res->status << std::endl;
 			LogUpdateError(
 				"UF-BOOTSTRAP-HTTP",
 				"LauncherUpdateCoordinator::FetchBootstrapConfig",
 				"Bootstrap HTTP request returned non-200 status",
-				std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath,
+				hostPathDetails,
 				0,
 				res->status,
 				0);
 		}
 		else {
-			std::cout << "Failed to fetch bootstrap payload, http error: " << res.error() << std::endl;
 			LogUpdateError(
 				"UF-BOOTSTRAP-HTTP",
 				"LauncherUpdateCoordinator::FetchBootstrapConfig",
 				"Bootstrap HTTP request failed",
-				std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath,
+				hostPathDetails,
 				0,
 				0,
 				static_cast<int>(res.error()));
@@ -456,7 +558,6 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 	Json::Value remoteRoot;
 	Json::Reader reader;
 	if (!reader.parse(decrypted, remoteRoot) || !remoteRoot.isObject()) {
-		std::cout << "Bootstrap payload is not valid JSON." << std::endl;
 		SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
 		LogUpdateError(
 			"UF-BOOTSTRAP-JSON",
@@ -466,11 +567,12 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 		return false;
 	}
 
-	LogUpdateInfo(
+	LogUpdateInfoFmt(
 		"UF-BOOTSTRAP-SOURCE",
 		"LauncherUpdateCoordinator::FetchBootstrapConfig",
-		"Using remote bootstrap configuration",
-		std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath);
+		"Using remote bootstrap configuration (host={}, path={})",
+		kBootstrapHost,
+		kBootstrapPath);
 	return applyBootstrapRoot(remoteRoot, "remote");
 }
 
@@ -553,18 +655,16 @@ bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
 	}
 
 	if (!res || res->status != 200) {
-		const std::string statusText = res ? std::to_string(res->status) : std::string("none");
 		const int errorCode = static_cast<int>(res.error());
-		std::cout << "Failed to fetch Version.dat from " << resolvedPath
-			<< ", status: " << statusText
-			<< ", error: " << errorCode
-			<< ", retries: " << kManifestFetchMaxAttempts
-			<< std::endl;
+		const std::string details = workthread::loggingdetail::FormatToString(
+			"path={}, retries={}",
+			resolvedPath,
+			kManifestFetchMaxAttempts);
 		LogUpdateError(
 			"UF-MANIFEST-HTTP",
 			"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
 			"Version manifest HTTP request failed",
-			std::string("path=") + resolvedPath + ", retries=" + std::to_string(kManifestFetchMaxAttempts),
+			details,
 			0,
 			res ? res->status : 0,
 			errorCode);
@@ -572,12 +672,12 @@ bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
 		return false;
 	}
 	if (res->body.empty()) {
-		std::cout << "Version.dat response body is empty, path: " << resolvedPath << std::endl;
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-MANIFEST-EMPTY",
 			"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
 			"Version manifest response body is empty",
-			std::string("path=") + resolvedPath);
+			"path={}",
+			resolvedPath);
 		SetLauncherStatus(L"Failed: manifest content is empty.");
 		return false;
 	}
@@ -620,13 +720,13 @@ bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
 	}
 
 	if (manifestJsonText.empty()) {
-		std::cout << "Version.dat format not supported, path: " << resolvedPath
-			<< ", body_size: " << res->body.size() << std::endl;
-		LogUpdateError(
+		LogUpdateErrorDetailsFmt(
 			"UF-MANIFEST-PARSE",
 			"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
 			"Version manifest format not supported",
-			std::string("path=") + resolvedPath + ", body_size=" + std::to_string(res->body.size()));
+			"path={}, body_size={}",
+			resolvedPath,
+			res->body.size());
 		SetLauncherStatus(L"Failed: manifest format parse.");
 		return false;
 	}
@@ -658,7 +758,11 @@ bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
 			}
 		}
 		catch (...) {
-			std::cout << "Skip invalid local page path: " << config.m_strPage << std::endl;
+			LogUpdateWarnFmt(
+				"UF-MANIFEST-PATH",
+				"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
+				"Skip invalid local page path from manifest (page={})",
+				config.m_strPage);
 			remoteFiles.erase(config.m_strPage);
 		}
 	}
@@ -684,14 +788,20 @@ bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
 		sizeValidationDiffCount);
 
 	if (hasLocalManifestBaseline) {
-		std::cout << "Prelaunch sync list from local/remote Version.dat diff: "
-			<< m_versionState.runtimeList.size()
-			<< " (diff_count=" << manifestDiffCount << ")" << std::endl;
+		LogUpdateInfoFmt(
+			"UF-MANIFEST-DIFF",
+			"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
+			"Prelaunch sync list built from local/remote manifest diff (runtime_count={}, diff_count={})",
+			m_versionState.runtimeList.size(),
+			manifestDiffCount);
 	}
 	else {
-		std::cout << "Local Version.dat missing or invalid, prelaunch full size validation diff count: "
-			<< m_versionState.runtimeList.size()
-			<< " (size_diff_count=" << sizeValidationDiffCount << ")" << std::endl;
+		LogUpdateWarnFmt(
+			"UF-MANIFEST-FULLCHECK",
+			"LauncherUpdateCoordinator::RefreshRemoteVersionManifest",
+			"Local Version.dat missing/invalid; using full size validation diff (runtime_count={}, size_diff_count={})",
+			m_versionState.runtimeList.size(),
+			sizeValidationDiffCount);
 	}
 	m_versionState.localVersionMD5 = strRemoteVersionDatMd5;
 

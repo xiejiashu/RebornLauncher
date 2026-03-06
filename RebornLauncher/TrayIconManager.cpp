@@ -2,8 +2,7 @@
 #include "TrayIconManager.h"
 
 #include "RebornLauncher.h"
-
-#include <iostream>
+#include <cstdio>
 
 TrayIconManager::TrayIconManager(bool& renderingFlag)
     : m_renderingFlag(renderingFlag) {
@@ -17,7 +16,14 @@ void TrayIconManager::Init(HWND hWnd, HINSTANCE hInstance) {
     m_nid.uCallbackMessage = WM_TRAYICON;
     m_nid.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_REBORNLAUNCHER));
     if (!m_nid.hIcon) {
-        std::cout << "LoadIcon failed errcode:" << GetLastError() << ":" << hInstance << std::endl;
+        char message[192] = {};
+        sprintf_s(
+            message,
+            sizeof(message),
+            "[UF-TRAY-ICON] LoadIcon failed, error=%lu, instance=%p\n",
+            static_cast<unsigned long>(GetLastError()),
+            hInstance);
+        OutputDebugStringA(message);
     }
     lstrcpy(m_nid.szTip, L"RebornLauncher");
     Shell_NotifyIcon(NIM_ADD, &m_nid);

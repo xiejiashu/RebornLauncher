@@ -1,17 +1,21 @@
 #include "VersionConfig.h"
 #include "P2PClient.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace httplib
@@ -43,7 +47,14 @@ struct VersionState {
 	std::vector<std::string> basePackageUrls;
 	std::string extractRootPrefix;
 	std::string localVersionMD5;
-	std::unordered_set<std::string> noUpdateFiles;
+	std::unordered_set<std::string> localOnlyFiles;
+};
+
+enum class UpdateLogLevel : int {
+	Debug = 1,
+	Info = 2,
+	Warn = 3,
+	Error = 4
 };
 
 struct DownloadProgressState {
@@ -173,11 +184,53 @@ public:
 		const char* source,
 		const std::string& message,
 		const std::string& details = {}) const;
+	template <typename... Args>
+	void LogUpdateInfoFmt(
+		const char* code,
+		const char* source,
+		std::string_view messageFmt,
+		Args&&... args) const;
+	void LogUpdateWarn(
+		const char* code,
+		const char* source,
+		const std::string& message,
+		const std::string& details = {}) const;
+	template <typename... Args>
+	void LogUpdateWarnFmt(
+		const char* code,
+		const char* source,
+		std::string_view messageFmt,
+		Args&&... args) const;
+	void LogUpdateDebug(
+		const char* code,
+		const char* source,
+		const std::string& message,
+		const std::string& details = {}) const;
+	template <typename... Args>
+	void LogUpdateDebugFmt(
+		const char* code,
+		const char* source,
+		std::string_view messageFmt,
+		Args&&... args) const;
+	template <typename... Args>
+	void LogUpdateErrorFmt(
+		const char* code,
+		const char* source,
+		std::string_view reasonFmt,
+		Args&&... args) const;
+	template <typename... Args>
+	void LogUpdateErrorDetailsFmt(
+		const char* code,
+		const char* source,
+		const std::string& reason,
+		std::string_view detailsFmt,
+		Args&&... args) const;
+	void SetLogLevel(int level);
+	int GetLogLevel() const;
 private:
 	bool InitializeDownloadEnvironment();
 	bool EnsureBasePackageReady();
 	void LoadLocalVersionState();
-	void LoadNoUpdateList();
 	bool IsRuntimeUpdateSkipped(const std::string& localPath) const;
 	void RefreshRemoteManifestIfChanged();
 	bool HandleSelfUpdateAndExit();
@@ -214,6 +267,7 @@ private:
 	std::wstring m_launcherStatus{ L"\u542f\u52a8\u5668\u521d\u59cb\u5316\u4e2d..." };
 	mutable std::mutex m_statusMutex;
 	mutable std::mutex m_logMutex;
+	std::atomic<int> m_logLevel{ static_cast<int>(UpdateLogLevel::Warn) };
 	std::mutex m_launchFlowMutex;
 };
 
@@ -261,6 +315,26 @@ inline std::string SanitizeForLog(const std::string& value) {
 	return sanitized;
 }
 
+inline int ClampLogLevel(int level) {
+	if (level < static_cast<int>(UpdateLogLevel::Debug)) {
+		return static_cast<int>(UpdateLogLevel::Debug);
+	}
+	if (level > static_cast<int>(UpdateLogLevel::Error)) {
+		return static_cast<int>(UpdateLogLevel::Error);
+	}
+	return level;
+}
+
+template <typename... Args>
+inline std::string FormatToString(std::string_view pattern, Args&&... args) {
+	try {
+		return std::vformat(pattern, std::make_format_args(std::forward<Args>(args)...));
+	}
+	catch (const std::format_error&) {
+		return std::string(pattern);
+	}
+}
+
 } // namespace workthread::loggingdetail
 
 inline std::filesystem::path LauncherUpdateCoordinator::GetUpdateLogFilePath() const {
@@ -302,6 +376,17 @@ inline std::string LauncherUpdateCoordinator::FormatSystemError(DWORD errorCode)
 	return workthread::loggingdetail::SanitizeForLog(message);
 }
 
+inline void LauncherUpdateCoordinator::SetLogLevel(int level) {
+	m_logLevel.store(
+		workthread::loggingdetail::ClampLogLevel(level),
+		std::memory_order_relaxed);
+}
+
+inline int LauncherUpdateCoordinator::GetLogLevel() const {
+	return workthread::loggingdetail::ClampLogLevel(
+		m_logLevel.load(std::memory_order_relaxed));
+}
+
 inline void LauncherUpdateCoordinator::LogUpdateError(
 	const char* code,
 	const char* source,
@@ -310,6 +395,10 @@ inline void LauncherUpdateCoordinator::LogUpdateError(
 	DWORD systemError,
 	int httpStatus,
 	int httpError) const {
+	if (static_cast<int>(UpdateLogLevel::Error) < GetLogLevel()) {
+		return;
+	}
+
 	std::lock_guard<std::mutex> lock(m_logMutex);
 	const std::filesystem::path logPath = GetUpdateLogFilePath();
 	std::ofstream stream(logPath, std::ios::binary | std::ios::app);
@@ -347,6 +436,10 @@ inline void LauncherUpdateCoordinator::LogUpdateInfo(
 	const char* source,
 	const std::string& message,
 	const std::string& details) const {
+	if (static_cast<int>(UpdateLogLevel::Info) < GetLogLevel()) {
+		return;
+	}
+
 	std::lock_guard<std::mutex> lock(m_logMutex);
 	const std::filesystem::path logPath = GetUpdateLogFilePath();
 	std::ofstream stream(logPath, std::ios::binary | std::ios::app);
@@ -363,6 +456,122 @@ inline void LauncherUpdateCoordinator::LogUpdateInfo(
 		stream << " details=\"" << workthread::loggingdetail::SanitizeForLog(details) << "\"";
 	}
 	stream << std::endl;
+}
+
+template <typename... Args>
+inline void LauncherUpdateCoordinator::LogUpdateInfoFmt(
+	const char* code,
+	const char* source,
+	std::string_view messageFmt,
+	Args&&... args) const {
+	LogUpdateInfo(
+		code,
+		source,
+		workthread::loggingdetail::FormatToString(messageFmt, std::forward<Args>(args)...));
+}
+
+inline void LauncherUpdateCoordinator::LogUpdateWarn(
+	const char* code,
+	const char* source,
+	const std::string& message,
+	const std::string& details) const {
+	if (static_cast<int>(UpdateLogLevel::Warn) < GetLogLevel()) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(m_logMutex);
+	const std::filesystem::path logPath = GetUpdateLogFilePath();
+	std::ofstream stream(logPath, std::ios::binary | std::ios::app);
+	if (!stream.is_open()) {
+		return;
+	}
+
+	stream << "[" << workthread::loggingdetail::BuildLocalTimestamp() << "] "
+		<< "level=WARN "
+		<< "code=" << (code ? code : "UF-UNKNOWN") << " "
+		<< "source=\"" << workthread::loggingdetail::SanitizeForLog(source ? source : "unknown") << "\" "
+		<< "message=\"" << workthread::loggingdetail::SanitizeForLog(message) << "\"";
+	if (!details.empty()) {
+		stream << " details=\"" << workthread::loggingdetail::SanitizeForLog(details) << "\"";
+	}
+	stream << std::endl;
+}
+
+template <typename... Args>
+inline void LauncherUpdateCoordinator::LogUpdateWarnFmt(
+	const char* code,
+	const char* source,
+	std::string_view messageFmt,
+	Args&&... args) const {
+	LogUpdateWarn(
+		code,
+		source,
+		workthread::loggingdetail::FormatToString(messageFmt, std::forward<Args>(args)...));
+}
+
+inline void LauncherUpdateCoordinator::LogUpdateDebug(
+	const char* code,
+	const char* source,
+	const std::string& message,
+	const std::string& details) const {
+	if (static_cast<int>(UpdateLogLevel::Debug) < GetLogLevel()) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(m_logMutex);
+	const std::filesystem::path logPath = GetUpdateLogFilePath();
+	std::ofstream stream(logPath, std::ios::binary | std::ios::app);
+	if (!stream.is_open()) {
+		return;
+	}
+
+	stream << "[" << workthread::loggingdetail::BuildLocalTimestamp() << "] "
+		<< "level=DEBUG "
+		<< "code=" << (code ? code : "UF-UNKNOWN") << " "
+		<< "source=\"" << workthread::loggingdetail::SanitizeForLog(source ? source : "unknown") << "\" "
+		<< "message=\"" << workthread::loggingdetail::SanitizeForLog(message) << "\"";
+	if (!details.empty()) {
+		stream << " details=\"" << workthread::loggingdetail::SanitizeForLog(details) << "\"";
+	}
+	stream << std::endl;
+}
+
+template <typename... Args>
+inline void LauncherUpdateCoordinator::LogUpdateDebugFmt(
+	const char* code,
+	const char* source,
+	std::string_view messageFmt,
+	Args&&... args) const {
+	LogUpdateDebug(
+		code,
+		source,
+		workthread::loggingdetail::FormatToString(messageFmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void LauncherUpdateCoordinator::LogUpdateErrorFmt(
+	const char* code,
+	const char* source,
+	std::string_view reasonFmt,
+	Args&&... args) const {
+	LogUpdateError(
+		code,
+		source,
+		workthread::loggingdetail::FormatToString(reasonFmt, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void LauncherUpdateCoordinator::LogUpdateErrorDetailsFmt(
+	const char* code,
+	const char* source,
+	const std::string& reason,
+	std::string_view detailsFmt,
+	Args&&... args) const {
+	LogUpdateError(
+		code,
+		source,
+		reason,
+		workthread::loggingdetail::FormatToString(detailsFmt, std::forward<Args>(args)...));
 }
 
 namespace workthread::localization {

@@ -177,6 +177,30 @@ LauncherUpdateCoordinator::~LauncherUpdateCoordinator()
 {
 }
 
+void LauncherUpdateCoordinator::RequestWebServiceRecovery()
+{
+	m_webServiceRecoveryRequested.store(true, std::memory_order_relaxed);
+	std::shared_ptr<httplib::Server> activeServer;
+	{
+		std::lock_guard<std::mutex> lock(m_webServiceMutex);
+		activeServer = m_activeWebServer;
+	}
+
+	if (activeServer) {
+		LogUpdateWarnFmt(
+			"UF-WS-RECOVER",
+			"LauncherUpdateCoordinator::RequestWebServiceRecovery",
+			"Web service recovery requested; stopping active listener");
+		activeServer->stop();
+		return;
+	}
+
+	LogUpdateWarnFmt(
+		"UF-WS-RECOVER",
+		"LauncherUpdateCoordinator::RequestWebServiceRecovery",
+		"Web service recovery requested but no active listener instance");
+}
+
 // Thread entry point that terminates stray processes and runs the worker.
 DWORD __stdcall LauncherUpdateCoordinator::ThreadProc(LPVOID lpParameter)
 {

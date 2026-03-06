@@ -21,6 +21,7 @@
 namespace httplib
 {
 	class Client;
+	class Server;
 }
 
 struct DataBlock {
@@ -162,6 +163,7 @@ public:
 	void WriteVersionToMapping(std::string& m_strRemoteVersionJson);
 
 	void WebServiceThread();
+	void RequestWebServiceRecovery();
 
 	void Stop();
 
@@ -269,6 +271,9 @@ private:
 	mutable std::mutex m_logMutex;
 	std::atomic<int> m_logLevel{ static_cast<int>(UpdateLogLevel::Warn) };
 	std::mutex m_launchFlowMutex;
+	mutable std::mutex m_webServiceMutex;
+	std::shared_ptr<httplib::Server> m_activeWebServer;
+	std::atomic<bool> m_webServiceRecoveryRequested{ false };
 };
 
 namespace workthread::loggingdetail {

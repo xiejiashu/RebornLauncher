@@ -249,8 +249,12 @@ void LauncherUpdateCoordinator::WebServiceThread()
 	});
 
 	while (m_runtimeState.run) {
-		httplib::Server svr;
-		svr.Get("/download", [this, &asyncQueueMutex, &asyncQueueCv, &asyncQueue, &asyncQueuedPages, &executeClientDownload](const httplib::Request& req, httplib::Response& res) {
+		auto svr = std::make_shared<httplib::Server>();
+		{
+			std::lock_guard<std::mutex> lock(m_webServiceMutex);
+			m_activeWebServer = svr;
+		}
+		svr->Get("/download", [this, &asyncQueueMutex, &asyncQueueCv, &asyncQueue, &asyncQueuedPages, &executeClientDownload](const httplib::Request& req, httplib::Response& res) {
 			const std::string strPage = req.has_param("page")
 				? req.get_param_value("page")
 				: std::string();
@@ -293,7 +297,7 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			res.set_content(outcome.body, "text/plain");
 		});
 
-		svr.Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
+		svr->Get("/RunClient", [this](const httplib::Request& req, httplib::Response& res) {
 			(void)req;
 			LogUpdateInfoFmt(
 				"UF-WS-RUNCLIENT",
@@ -343,17 +347,33 @@ void LauncherUpdateCoordinator::WebServiceThread()
 			SetLauncherStatus(L"RunClient launch succeeded.");
 		});
 
-		svr.Get("/Stop", [&svr, this](const httplib::Request& req, httplib::Response& res) {
+		svr->Get("/Stop", [this, svr](const httplib::Request& req, httplib::Response& res) {
 			(void)req;
 			TerminateAllGameProcesses();
 			res.status = 200;
 			res.set_content("OK", "text/plain");
-			svr.stop();
+			svr->stop();
 		});
 
-		const bool listening = svr.listen("localhost", 12345);
+		const bool listening = svr->listen("localhost", 12345);
+		{
+			std::lock_guard<std::mutex> lock(m_webServiceMutex);
+			if (m_activeWebServer.get() == svr.get()) {
+				m_activeWebServer.reset();
+			}
+		}
 		if (!m_runtimeState.run) {
 			break;
+		}
+		const bool recoveryRequested = m_webServiceRecoveryRequested.exchange(false, std::memory_order_relaxed);
+		if (recoveryRequested) {
+			SetLauncherStatus(L"Restarting local HTTP service...");
+			LogUpdateWarn(
+				"UF-WS-RECOVER",
+				"LauncherUpdateCoordinator::WebServiceThread",
+				"Web service recovery requested; listener restart completed");
+			Sleep(120);
+			continue;
 		}
 		if (!listening) {
 			SetLauncherStatus(L"Retrying local HTTP service...");

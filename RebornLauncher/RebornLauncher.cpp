@@ -13,11 +13,15 @@
 #include <objidl.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cwctype>
 #include <filesystem>
+#include <format>
 #include <process.h>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 #include <shellapi.h>
 #include <gdiplus.h>
@@ -63,6 +67,7 @@ bool g_manualTrayMode = false;
 bool g_trayShownForDownload = false;
 bool g_hasSavedWindowPos = false;
 POINT g_savedWindowPos = { 0, 0 };
+std::atomic<bool> g_runClientRequestInFlight{ false };
 
 constexpr UINT ID_TRAY_OPEN = 5005;
 constexpr UINT ID_START_NEW_GAME = 5006;
@@ -103,6 +108,11 @@ void DebugLog(const std::wstring& message) {
         line.push_back(L'\n');
     }
     OutputDebugStringW(line.c_str());
+}
+
+template <typename... Args>
+void DebugLogFmt(std::wstring_view fmt, Args&&... args) {
+    DebugLog(std::vformat(fmt, std::make_wformat_args(std::forward<Args>(args)...)));
 }
 
 std::wstring NormalizePathForCompare(const std::filesystem::path& input) {
@@ -435,6 +445,65 @@ bool IsProcessPathMatching(DWORD processId, const std::filesystem::path& expecte
     return PathsEqual(expectedPath, std::filesystem::path(processPath));
 }
 
+struct LauncherWindowSearchContext {
+    DWORD selfPid{ 0 };
+    std::filesystem::path launcherPath;
+    HWND found{ nullptr };
+};
+
+BOOL CALLBACK EnumRunningLauncherWindowProc(HWND hWnd, LPARAM lParam) {
+    auto* context = reinterpret_cast<LauncherWindowSearchContext*>(lParam);
+    if (!context) {
+        return TRUE;
+    }
+
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hWnd, &processId);
+    if (processId == 0 || processId == context->selfPid) {
+        return TRUE;
+    }
+    if (!IsProcessPathMatching(processId, context->launcherPath)) {
+        return TRUE;
+    }
+    if ((GetWindowLongPtrW(hWnd, GWL_STYLE) & WS_CHILD) != 0) {
+        return TRUE;
+    }
+
+    context->found = hWnd;
+    return FALSE;
+}
+
+HWND FindRunningLauncherWindow() {
+    LauncherWindowSearchContext context;
+    context.selfPid = static_cast<DWORD>(_getpid());
+    context.launcherPath = std::filesystem::path(g_strCurrentModulePath);
+    EnumWindows(EnumRunningLauncherWindowProc, reinterpret_cast<LPARAM>(&context));
+    return context.found;
+}
+
+void NotifyRunningLauncherStartRequest() {
+    const HWND targetWindow = FindRunningLauncherWindow();
+    if (!targetWindow) {
+        DebugLog(L"No running launcher window found for foreground/start notification.");
+        return;
+    }
+
+    DWORD_PTR result = 0;
+    const LRESULT sendOk = SendMessageTimeoutW(
+        targetWindow,
+        WM_EXTERNAL_RUNCLIENT_REQUEST,
+        0,
+        0,
+        SMTO_ABORTIFHUNG,
+        500,
+        &result);
+    if (!sendOk) {
+        DebugLogFmt(
+            L"SendMessageTimeout(WM_EXTERNAL_RUNCLIENT_REQUEST) failed. err={}",
+            GetLastError());
+    }
+}
+
 bool HandleCleanupRelay(const RelaunchArgs& relaunchArgs) {
     if (relaunchArgs.cleanupPath.empty() && relaunchArgs.cleanupPid == 0) {
         return true;
@@ -585,43 +654,224 @@ bool IsProcessRunning(DWORD dwProcessId) {
     return wait == WAIT_TIMEOUT;
 }
 
-bool RequestRunningLauncherRunClient() {
-    httplib::Client cli("localhost", 12345);
-    auto res = cli.Get("/RunClient");
-    if (res && res->status == 200) {
-        return true;
+bool RequestRunningLauncherRunClient(
+    int maxAttempts = 1,
+    DWORD retryDelayMs = 120,
+    int* outHttpStatus = nullptr,
+    int* outHttpError = nullptr) {
+    if (outHttpStatus) {
+        *outHttpStatus = 0;
+    }
+    if (outHttpError) {
+        *outHttpError = 0;
+    }
+    if (maxAttempts < 1) {
+        maxAttempts = 1;
+    }
+
+    int lastHttpStatus = 0;
+    int lastHttpError = 0;
+
+    for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        httplib::Client cli("localhost", 12345);
+        cli.set_connection_timeout(1, 0);
+        cli.set_read_timeout(2, 0);
+        cli.set_write_timeout(1, 0);
+
+        auto res = cli.Get("/RunClient");
+        if (res) {
+            lastHttpStatus = res->status;
+            lastHttpError = static_cast<int>(res.error());
+            if (res->status == 200) {
+                if (outHttpStatus) {
+                    *outHttpStatus = lastHttpStatus;
+                }
+                if (outHttpError) {
+                    *outHttpError = lastHttpError;
+                }
+                return true;
+            }
+
+            DebugLogFmt(
+                L"RunClient request failed (attempt={}/{}, status={}, error={})",
+                attempt,
+                maxAttempts,
+                lastHttpStatus,
+                lastHttpError);
+        }
+        else {
+            lastHttpStatus = 0;
+            lastHttpError = static_cast<int>(res.error());
+            DebugLogFmt(
+                L"RunClient request failed (attempt={}/{}, no response, error={})",
+                attempt,
+                maxAttempts,
+                lastHttpError);
+        }
+
+        if (attempt < maxAttempts && retryDelayMs > 0) {
+            Sleep(retryDelayMs);
+        }
+    }
+
+    if (outHttpStatus) {
+        *outHttpStatus = lastHttpStatus;
+    }
+    if (outHttpError) {
+        *outHttpError = lastHttpError;
+    }
+    return false;
+}
+
+bool TerminateOtherLauncherProcesses() {
+    const DWORD selfPid = static_cast<DWORD>(_getpid());
+    const std::filesystem::path currentPath(g_strCurrentModulePath);
+    bool terminatedAny = false;
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) {
+        DebugLogFmt(L"CreateToolhelp32Snapshot failed while terminating stale launcher instances. err={}", GetLastError());
+        return false;
+    }
+
+    PROCESSENTRY32 pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32First(hSnap, &pe)) {
+        do {
+            if (pe.th32ProcessID == 0 || pe.th32ProcessID == selfPid) {
+                continue;
+            }
+            if (_wcsicmp(pe.szExeFile, g_strCurrentExeName.c_str()) != 0) {
+                continue;
+            }
+            if (!IsProcessPathMatching(pe.th32ProcessID, currentPath)) {
+                continue;
+            }
+
+            HANDLE hProc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pe.th32ProcessID);
+            if (!hProc) {
+                DebugLogFmt(
+                    L"OpenProcess(PROCESS_TERMINATE) failed for stale launcher pid={}. err={}",
+                    pe.th32ProcessID,
+                    GetLastError());
+                continue;
+            }
+
+            if (!TerminateProcess(hProc, 0)) {
+                DebugLogFmt(
+                    L"TerminateProcess failed for stale launcher pid={}. err={}",
+                    pe.th32ProcessID,
+                    GetLastError());
+                CloseHandle(hProc);
+                continue;
+            }
+
+            WaitForSingleObject(hProc, 5000);
+            CloseHandle(hProc);
+            terminatedAny = true;
+            DebugLogFmt(L"Terminated stale launcher process. pid={}", pe.th32ProcessID);
+        } while (Process32Next(hSnap, &pe));
+    }
+    else {
+        DebugLogFmt(L"Process32First failed while terminating stale launcher instances. err={}", GetLastError());
+    }
+
+    CloseHandle(hSnap);
+    return terminatedAny;
+}
+
+bool AcquireSingleInstanceMutexWithRetry(int maxAttempts, DWORD retryDelayMs) {
+    if (maxAttempts < 1) {
+        maxAttempts = 1;
+    }
+
+    for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        if (g_hSingleInstanceMutex) {
+            CloseHandle(g_hSingleInstanceMutex);
+            g_hSingleInstanceMutex = NULL;
+        }
+
+        SetLastError(ERROR_SUCCESS);
+        g_hSingleInstanceMutex = CreateMutex(nullptr, FALSE, kLauncherSingleInstanceMutexName);
+        const DWORD createErr = GetLastError();
+        if (g_hSingleInstanceMutex && createErr != ERROR_ALREADY_EXISTS) {
+            DebugLogFmt(
+                L"Single-instance mutex acquired after recovery. attempt={}, err={}",
+                attempt,
+                createErr);
+            return true;
+        }
+
+        if (!g_hSingleInstanceMutex) {
+            DebugLogFmt(
+                L"CreateMutex failed while acquiring single-instance mutex. attempt={}, err={}",
+                attempt,
+                createErr);
+        }
+        else {
+            DebugLogFmt(
+                L"Single-instance mutex still owned by another instance. attempt={}, err={}",
+                attempt,
+                createErr);
+        }
+
+        if (attempt < maxAttempts && retryDelayMs > 0) {
+            Sleep(retryDelayMs);
+        }
+    }
+
+    if (g_hSingleInstanceMutex) {
+        CloseHandle(g_hSingleInstanceMutex);
+        g_hSingleInstanceMutex = NULL;
     }
     return false;
 }
 
 bool RequestNewGameWithError(HWND owner) {
-    if (RequestRunningLauncherRunClient()) {
+    int httpStatus = 0;
+    int httpError = 0;
+    if (RequestRunningLauncherRunClient(2, 150, &httpStatus, &httpError)) {
         return true;
     }
-    MessageBox(owner, TEXT("Failed to request new game launch."), TEXT("Error"), MB_OK | MB_ICONERROR);
-	// Terminate any potential stale launcher instances.
-	HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (hSnap != INVALID_HANDLE_VALUE) {
-		PROCESSENTRY32 pe{};
-		pe.dwSize = sizeof(pe);
-        if (Process32First(hSnap, &pe)) {
-            do {
-                if (_wcsicmp(pe.szExeFile, g_strCurrentExeName.c_str()) == 0) {
-                    if (pe.th32ProcessID == _getpid()) {
-                        continue;
-					}
-                    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
-                    if (hProc) {
-                        TerminateProcess(hProc, 0);
-                        CloseHandle(hProc);
-                    }
-                }
-            } while (Process32Next(hSnap, &pe));
+
+    bool attemptedRecovery = false;
+    if (g_updateCoordinatorPtr) {
+        attemptedRecovery = true;
+        DebugLogFmt(
+            L"RunClient request failed in current launcher (status={}, error={}); requesting web service recovery.",
+            httpStatus,
+            httpError);
+        g_updateCoordinatorPtr->RequestWebServiceRecovery();
+        Sleep(220);
+        if (RequestRunningLauncherRunClient(3, 180, &httpStatus, &httpError)) {
+            DebugLog(L"RunClient request succeeded after web service recovery.");
+            return true;
         }
-		CloseHandle(hSnap);
-	}
+    }
+
+    std::wstring errorMessage = std::format(
+        L"Failed to request new game launch.\nHTTP status: {}\nHTTP error: {}",
+        httpStatus,
+        httpError);
+    if (attemptedRecovery) {
+        errorMessage += L"\nTried HTTP service recovery.";
+    }
+    HWND ownerWnd = (owner && IsWindow(owner)) ? owner : nullptr;
+    MessageBox(ownerWnd, errorMessage.c_str(), TEXT("Error"), MB_OK | MB_ICONERROR);
 
     return false;
+}
+
+void RequestNewGameAsync(HWND owner) {
+    if (g_runClientRequestInFlight.exchange(true, std::memory_order_acq_rel)) {
+        DebugLog(L"RunClient request ignored: previous request still in progress.");
+        return;
+    }
+
+    std::thread([owner]() {
+        RequestNewGameWithError(owner);
+        g_runClientRequestInFlight.store(false, std::memory_order_release);
+    }).detach();
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -690,12 +940,52 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     g_hSingleInstanceMutex = CreateMutex(nullptr, FALSE, kLauncherSingleInstanceMutexName);
     if (g_hSingleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        if (!RequestRunningLauncherRunClient()) {
-            MessageBox(nullptr, TEXT("Launcher is already running, but failed to request new game launch."), TEXT("Error"), MB_OK);
+        NotifyRunningLauncherStartRequest();
+
+        int httpStatus = 0;
+        int httpError = 0;
+        if (RequestRunningLauncherRunClient(2, 150, &httpStatus, &httpError)) {
+            CloseHandle(g_hSingleInstanceMutex);
+            g_hSingleInstanceMutex = NULL;
+            return 0;
         }
-        CloseHandle(g_hSingleInstanceMutex);
-        g_hSingleInstanceMutex = NULL;
-        return 0;
+
+        if (httpStatus != 0) {
+            std::wstring message = std::format(
+                L"Launcher is already running, but /RunClient returned error.\nHTTP status: {}\nHTTP error: {}",
+                httpStatus,
+                httpError);
+            MessageBox(nullptr, message.c_str(), TEXT("Error"), MB_OK | MB_ICONERROR);
+            CloseHandle(g_hSingleInstanceMutex);
+            g_hSingleInstanceMutex = NULL;
+            return 0;
+        }
+
+        DebugLogFmt(
+            L"Existing launcher instance did not respond to /RunClient (status={}, error={}). Attempting stale-instance recovery.",
+            httpStatus,
+            httpError);
+        const bool terminatedAny = TerminateOtherLauncherProcesses();
+        if (!AcquireSingleInstanceMutexWithRetry(10, 200)) {
+            std::wstring message = std::format(
+                L"Launcher is already running, but /RunClient failed.\nHTTP status: {}\nHTTP error: {}",
+                httpStatus,
+                httpError);
+            if (terminatedAny) {
+                message += L"\nStale launcher process was terminated, but mutex takeover failed.";
+            }
+            else {
+                message += L"\nFailed to terminate stale launcher process.";
+            }
+            MessageBox(nullptr, message.c_str(), TEXT("Error"), MB_OK | MB_ICONERROR);
+            if (g_hSingleInstanceMutex) {
+                CloseHandle(g_hSingleInstanceMutex);
+                g_hSingleInstanceMutex = NULL;
+            }
+            return 0;
+        }
+
+        DebugLog(L"Recovered single-instance ownership after stale launcher termination.");
     }
 
     LoadStringW(hInstance, IDC_REBORNLAUNCHER, szWindowClass, MAX_LOADSTRING);
@@ -742,6 +1032,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         g_p2pController.UpdateProgressUi(g_hWnd, updateCoordinator, g_splashRenderer);
         Sleep(15);
+    }
+
+    if (g_runClientRequestInFlight.load(std::memory_order_acquire)) {
+        DebugLog(L"Waiting for in-flight RunClient request before shutdown.");
+        while (g_runClientRequestInFlight.load(std::memory_order_acquire)) {
+            Sleep(20);
+        }
     }
 
     updateCoordinator.Stop();
@@ -845,6 +1142,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_splashRenderer.OnTimerTick(hWnd);
         }
         break;
+    case WM_EXTERNAL_RUNCLIENT_REQUEST:
+    {
+        g_manualTrayMode = false;
+        g_trayShownForDownload = false;
+        if (!IsWindowVisible(hWnd)) {
+            g_trayIconManager.RestoreFromTray(hWnd);
+        }
+        else {
+            ShowWindow(hWnd, SW_RESTORE);
+            ShowWindow(hWnd, SW_SHOW);
+        }
+
+        // Force z-order promotion without permanently pinning topmost.
+        SetWindowPos(
+            hWnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetWindowPos(
+            hWnd,
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetForegroundWindow(hWnd);
+
+        if (g_updateCoordinatorPtr) {
+            g_updateCoordinatorPtr->SetLauncherStatus(L"启动中...");
+        }
+        InvalidateRect(hWnd, nullptr, TRUE);
+        return 0;
+    }
     case WM_LBUTTONDOWN:
     {
         if (g_splashRenderer.IsFollowingGameWindows()) {
@@ -877,7 +1211,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
         if (isDoubleClick) {
             s_lastIdleClickTick = 0;
-            RequestNewGameWithError(hWnd);
+            RequestNewGameAsync(hWnd);
             return 0;
         }
 
@@ -1022,7 +1356,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         case ID_START_NEW_GAME:
             if (!g_splashRenderer.IsFollowingGameWindows()) {
-                RequestNewGameWithError(hWnd);
+                RequestNewGameAsync(hWnd);
             }
             break;
         case ID_HIDE_TO_TRAY:

@@ -1,4 +1,4 @@
-﻿// RebornLauncher main entry and message routing.
+// RebornLauncher main entry and message routing.
 
 #include "framework.h"
 #include "RebornLauncher.h"
@@ -25,7 +25,7 @@
 #undef min
 #undef max
 
-#include "WorkThread.h"
+#include "LauncherUpdateCoordinator.h"
 #include "LauncherP2PController.h"
 #include "LauncherSplashRenderer.h"
 #include "TrayIconManager.h"
@@ -58,7 +58,7 @@ std::wstring g_strCurrentExeName;
 std::wstring g_strWorkPath;
 
 bool g_bRendering = true;
-WorkThread* g_workThreadPtr = nullptr;
+LauncherUpdateCoordinator* g_updateCoordinatorPtr = nullptr;
 bool g_manualTrayMode = false;
 bool g_trayShownForDownload = false;
 bool g_hasSavedWindowPos = false;
@@ -683,9 +683,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     g_p2pController.ApplyP2PSettings();
-    WorkThread workThread(g_hWnd, g_strCurrentModulePath, g_strCurrentExeName, g_strWorkPath, g_p2pController.GetP2PSettings());
-    g_workThreadPtr = &workThread;
-    g_p2pController.SetWorkThread(g_workThreadPtr);
+    LauncherUpdateCoordinator updateCoordinator(g_hWnd, g_strCurrentModulePath, g_strCurrentExeName, g_strWorkPath, g_p2pController.GetP2PSettings());
+    g_updateCoordinatorPtr = &updateCoordinator;
+    g_p2pController.SetUpdateCoordinator(g_updateCoordinatorPtr);
     g_p2pController.ApplyP2PSettings();
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_REBORNLAUNCHER));
@@ -708,14 +708,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             break;
         }
 
-        g_p2pController.UpdateProgressUi(g_hWnd, workThread, g_splashRenderer);
+        g_p2pController.UpdateProgressUi(g_hWnd, updateCoordinator, g_splashRenderer);
         Sleep(15);
     }
 
     std::cout << "Request stopped" << std::endl;
-    workThread.Stop();
-    g_workThreadPtr = nullptr;
-    g_p2pController.SetWorkThread(nullptr);
+    updateCoordinator.Stop();
+    g_updateCoordinatorPtr = nullptr;
+    g_p2pController.SetUpdateCoordinator(nullptr);
     if (g_gdiplusToken != 0) {
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
         g_gdiplusToken = 0;

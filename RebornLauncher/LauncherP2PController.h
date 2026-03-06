@@ -8,7 +8,7 @@
 #include "P2PClient.h"
 
 class LauncherSplashRenderer;
-class WorkThread;
+class LauncherUpdateCoordinator;
 
 class LauncherP2PController {
 public:
@@ -18,7 +18,7 @@ public:
     static constexpr UINT kIdStunAdd = 5004;
 
     void InitializePaths(const std::wstring& currentModulePath, const std::wstring& workPath);
-    void SetWorkThread(WorkThread* workThread);
+    void SetUpdateCoordinator(LauncherUpdateCoordinator* updateCoordinator);
 
     void LoadStunServers();
     void ApplyP2PSettings();
@@ -26,7 +26,7 @@ public:
 
     void CreateMainControls(HWND hWnd, HINSTANCE hInst);
     void LayoutMainControls(HWND hWnd);
-    void UpdateProgressUi(HWND hWnd, WorkThread& workThread, LauncherSplashRenderer& splashRenderer);
+    void UpdateProgressUi(HWND hWnd, LauncherUpdateCoordinator& updateCoordinator, LauncherSplashRenderer& splashRenderer);
     bool HandleCommand(WPARAM wParam, LPARAM lParam);
 
 private:
@@ -55,7 +55,7 @@ private:
     std::wstring m_currentModulePath;
     std::wstring m_workPath;
     std::wstring m_animStatusText{ L"\u66f4\u65b0\u8d44\u6e90\u4e2d..." };
-    WorkThread* m_workThreadPtr{ nullptr };
+    LauncherUpdateCoordinator* m_updateCoordinatorPtr{ nullptr };
     HINSTANCE m_hInst{ nullptr };
     static constexpr const wchar_t* kStunListFile = L"p2p_stun_servers.txt";
 };

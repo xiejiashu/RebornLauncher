@@ -2,18 +2,18 @@
 
 Top files accessed by agent workflows (descending by access count).
 
-1. `RebornLauncher/WorkThread.cpp` - 476
-2. `CryptoLoader/dllmain.cpp` - 281
-3. `RebornLauncher/RebornLauncher.cpp` - 235
-4. `RebornLauncher/WorkThread.h` - 129
-5. `RebornLauncher/WorkThreadChunkDownload.cpp` - 109
-6. `UpdateForge/UpdateForge.cpp` - 95
-7. `RebornLauncher/WorkThreadWebService.cpp` - 65
-8. `RebornLauncher/WorkThreadResumeDownload.cpp` - 54
-9. `RebornLauncher/WorkThreadManifest.cpp` - 42
-10. `RebornLauncher/LauncherSplashRenderer.cpp` - 42
-11. `RebornLauncher/WorkThreadClientState.cpp` - 31
-12. `UpdateForge/UpdateForge.h` - 17
-13. `RebornLauncher/CMakeLists.txt` - 17
-14. `AGENTS.md` - 17
-15. `CryptoLoader/CMakeLists.txt` - 17
+1. `RebornLauncher/LauncherUpdateCoordinator.cpp` - 504
+2. `CryptoLoader/dllmain.cpp` - 283
+3. `RebornLauncher/RebornLauncher.cpp` - 238
+4. `RebornLauncher/LauncherUpdateCoordinator.h` - 149
+5. `RebornLauncher/ChunkDownload.cpp` - 117
+6. `UpdateForge/UpdateForge.cpp` - 97
+7. `RebornLauncher/WebService.cpp` - 80
+8. `RebornLauncher/Manifest.cpp` - 72
+9. `RebornLauncher/ResumeDownload.cpp` - 65
+10. `RebornLauncher/LauncherSplashRenderer.cpp` - 44
+11. `RebornLauncher/ClientState.cpp` - 37
+12. `RebornLauncher/RuntimeUpdater.cpp` - 23
+13. `AGENTS.md` - 20
+14. `RebornLauncher/CMakeLists.txt` - 18
+15. `UpdateForge/UpdateForge.h` - 17

@@ -34,8 +34,6 @@ constexpr const char* kVersionMapMappingName = "MapleFireReborn.VersionFileMd5Ma
 constexpr DWORD kVersionMapRefreshIntervalMs = 30 * 1000;
 // Prevent repeated network requests for the same file in a hot loop.
 constexpr DWORD kDownloadRequestCooldownMs = 3000;
-// Do not re-dispatch asynchronous mismatch updates for the same file within 5 minutes.
-constexpr DWORD kAsyncDownloadRequestCooldownMs = 5 * 60 * 1000;
 // Current directory very rarely changes at runtime; cache it for hot hook path.
 constexpr DWORD kCurrentDirRefreshIntervalMs = 2000;
 
@@ -45,8 +43,6 @@ static std::mutex g_mapFilesMutex;
 static std::once_flag g_versionMapRefreshWorkerOnce;
 static std::unordered_map<std::string, DWORD> g_downloadRequestTicks;
 static std::mutex g_downloadRequestTicksMutex;
-static std::unordered_map<std::string, DWORD> g_asyncDownloadRequestTicks;
-static std::mutex g_asyncDownloadRequestTicksMutex;
 
 struct FileMetadataCacheEntry {
     bool exists = false;
@@ -65,15 +61,9 @@ static DWORD g_lastCurrentDirRefreshTick = 0;
 
 namespace {
 
-enum class DownloadRequestMode {
-    Sync,
-    Async
-};
-
 enum class DownloadDispatchResult {
     None,
-    SyncRequested,
-    AsyncQueued
+    SyncRequested
 };
 
 std::string ToUpperAscii(std::string value)
@@ -355,25 +345,7 @@ bool ShouldRequestDownloadNow(const std::string& key)
     return true;
 }
 
-bool CanRequestAsyncDownloadNow(const std::string& key)
-{
-    const DWORD now = GetTickCount();
-    std::lock_guard<std::mutex> lock(g_asyncDownloadRequestTicksMutex);
-    const auto it = g_asyncDownloadRequestTicks.find(key);
-    if (it == g_asyncDownloadRequestTicks.end()) {
-        return true;
-    }
-    return static_cast<DWORD>(now - it->second) >= kAsyncDownloadRequestCooldownMs;
-}
-
-void MarkAsyncDownloadRequested(const std::string& key)
-{
-    const DWORD now = GetTickCount();
-    std::lock_guard<std::mutex> lock(g_asyncDownloadRequestTicksMutex);
-    g_asyncDownloadRequestTicks[key] = now;
-}
-
-bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mode)
+bool RequestDownloadFromLauncher(const std::string& page)
 {
     if (page.empty()) {
         return false;
@@ -401,8 +373,7 @@ bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mo
 
     const std::string encodedPage = UrlEncode(page);
     const std::string requestPath = std::string(kDownloadPath) + "?page=" + encodedPage
-        + "&pid=" + std::to_string(_getpid())
-        + ((mode == DownloadRequestMode::Async) ? "&mode=async" : "");
+        + "&pid=" + std::to_string(_getpid());
     const std::wstring requestPathW = Utf8ToWide(requestPath);
     if (requestPathW.empty()) {
         return false;
@@ -417,13 +388,8 @@ bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mo
     if (!hSession) {
         return false;
     }
-    if (mode == DownloadRequestMode::Async) {
-        WinHttpSetTimeouts(hSession, 200, 200, 1200, 1200);
-    }
-    else {
-        // Missing files must complete synchronously to satisfy the game's file-exists expectation.
-        WinHttpSetTimeouts(hSession, 1000, 1000, 120000, 120000);
-    }
+    // Requests are synchronous to satisfy file-check expectations.
+    WinHttpSetTimeouts(hSession, 1000, 1000, 120000, 120000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, L"localhost", kLauncherPort, 0);
     if (!hConnect) {
@@ -457,12 +423,7 @@ bool RequestDownloadFromLauncher(const std::string& page, DownloadRequestMode mo
             &statusCode,
             &statusCodeSize,
             WINHTTP_NO_HEADER_INDEX)) {
-            if (mode == DownloadRequestMode::Async) {
-                ok = (statusCode == 202 || statusCode == 200);
-            }
-            else {
-                ok = (statusCode == 200);
-            }
+            ok = (statusCode == 200);
         }
     }
 
@@ -612,7 +573,7 @@ DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileEx
 
                 if (fileExists == FALSE) {
                     if (ShouldRequestDownloadNow(normalizedKey) &&
-                        RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
+                        RequestDownloadFromLauncher(page)) {
                         dispatchResult = DownloadDispatchResult::SyncRequested;
                     }
                     return dispatchResult;
@@ -626,7 +587,7 @@ DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileEx
                 if (metadataOk && !metadata.exists) {
                     // File may have been deleted after GetFileAttributesA returned.
                     if (ShouldRequestDownloadNow(normalizedKey) &&
-                        RequestDownloadFromLauncher(page, DownloadRequestMode::Sync)) {
+                        RequestDownloadFromLauncher(page)) {
                         dispatchResult = DownloadDispatchResult::SyncRequested;
                     }
                     return dispatchResult;
@@ -649,10 +610,10 @@ DownloadDispatchResult HandleHookedFileCheck(const CHAR* lpFileName, BOOL fileEx
                     }
                 }
 
-                if (md5Mismatch && CanRequestAsyncDownloadNow(normalizedKey)) {
-                    if (RequestDownloadFromLauncher(page, DownloadRequestMode::Async)) {
-                        MarkAsyncDownloadRequested(normalizedKey);
-                        dispatchResult = DownloadDispatchResult::AsyncQueued;
+                if (md5Mismatch) {
+                    if (ShouldRequestDownloadNow(normalizedKey) &&
+                        RequestDownloadFromLauncher(page)) {
+                        dispatchResult = DownloadDispatchResult::SyncRequested;
                     }
                 }
             }

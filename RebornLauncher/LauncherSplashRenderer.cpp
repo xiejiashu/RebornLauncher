@@ -11,7 +11,7 @@
 #include <gdiplus.h>
 
 #include "RebornLauncher.h"
-#include "WorkThread.h"
+#include "LauncherUpdateCoordinator.h"
 
 namespace {
 
@@ -250,7 +250,7 @@ void LauncherSplashRenderer::UpdateDockAnimation(HWND hWnd) {
     }
 }
 
-void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, WorkThread& workThread) {
+void LauncherSplashRenderer::RefreshOverlayState(HWND hWnd, LauncherUpdateCoordinator& workThread) {
     if (!hWnd) {
         return;
     }

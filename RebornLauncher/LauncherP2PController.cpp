@@ -9,15 +9,15 @@
 #include "Encoding.h"
 #include "LauncherP2PConfig.h"
 #include "LauncherSplashRenderer.h"
-#include "WorkThread.h"
+#include "LauncherUpdateCoordinator.h"
 
 void LauncherP2PController::InitializePaths(const std::wstring& currentModulePath, const std::wstring& workPath) {
     m_currentModulePath = currentModulePath;
     m_workPath = workPath;
 }
 
-void LauncherP2PController::SetWorkThread(WorkThread* workThread) {
-    m_workThreadPtr = workThread;
+void LauncherP2PController::SetUpdateCoordinator(LauncherUpdateCoordinator* updateCoordinator) {
+    m_updateCoordinatorPtr = updateCoordinator;
 }
 
 std::filesystem::path LauncherP2PController::GetStunConfigPath() const {
@@ -83,8 +83,8 @@ void LauncherP2PController::ApplyP2PSettings() {
         ? L"\u4f7f\u7528 P2P \u66f4\u65b0\u8d44\u6e90\u4e2d..."
         : L"\u66f4\u65b0\u8d44\u6e90\u4e2d...";
 
-    if (m_workThreadPtr) {
-        m_workThreadPtr->UpdateP2PSettings(m_p2pSettings);
+    if (m_updateCoordinatorPtr) {
+        m_updateCoordinatorPtr->UpdateP2PSettings(m_p2pSettings);
     }
 }
 
@@ -228,14 +228,14 @@ void LauncherP2PController::CreateMainControls(HWND hWnd, HINSTANCE hInst) {
     LayoutMainControls(hWnd);
 }
 
-void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, LauncherSplashRenderer& splashRenderer) {
-    splashRenderer.RefreshOverlayState(hWnd, workThread);
+void LauncherP2PController::UpdateProgressUi(HWND hWnd, LauncherUpdateCoordinator& updateCoordinator, LauncherSplashRenderer& splashRenderer) {
+    splashRenderer.RefreshOverlayState(hWnd, updateCoordinator);
 
-    const int totalCount = workThread.GetTotalDownload();
-    const int currentCount = workThread.GetCurrentDownload();
-    const int fileSize = workThread.GetCurrentDownloadSize();
-    const int fileProgress = workThread.GetCurrentDownloadProgress();
-    std::wstring stageStatus = workThread.GetLauncherStatus();
+    const int totalCount = updateCoordinator.GetTotalDownload();
+    const int currentCount = updateCoordinator.GetCurrentDownload();
+    const int fileSize = updateCoordinator.GetCurrentDownloadSize();
+    const int fileProgress = updateCoordinator.GetCurrentDownloadProgress();
+    std::wstring stageStatus = updateCoordinator.GetLauncherStatus();
     if (stageStatus.empty()) {
         stageStatus = L"\u5904\u7406\u4e2d...";
     }
@@ -246,7 +246,7 @@ void LauncherP2PController::UpdateProgressUi(HWND hWnd, WorkThread& workThread, 
         SendMessage(m_ui.fileProgress, PBM_SETPOS, fileProgress, 0);
     }
 
-    std::wstring fileName = workThread.GetCurrentDownloadFile();
+    std::wstring fileName = updateCoordinator.GetCurrentDownloadFile();
     if (!fileName.empty()) {
         m_animStatusText = L"\u66f4\u65b0\u4e2d\uff1a" + fileName;
     } else {

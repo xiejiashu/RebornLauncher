@@ -12,7 +12,7 @@ class Bitmap;
 class Graphics;
 }
 
-class WorkThread;
+class LauncherUpdateCoordinator;
 
 class LauncherSplashRenderer {
 public:
@@ -24,7 +24,7 @@ public:
     void EnsureAnimationFramesLoaded();
     void OnTimerTick(HWND hWnd);
     void DrawScene(HWND hWnd, HDC hdc);
-    void RefreshOverlayState(HWND hWnd, WorkThread& workThread);
+    void RefreshOverlayState(HWND hWnd, LauncherUpdateCoordinator& workThread);
     void SetDownloadPercent(HWND hWnd, int percent);
     bool IsFollowingGameWindows() const;
     int GetDownloadPercent() const;

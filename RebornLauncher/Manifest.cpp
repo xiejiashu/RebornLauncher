@@ -25,6 +25,7 @@ constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/R
 #else
 constexpr const char* kBootstrapPath = "/MengMianHeiYiRen/MagicShow/raw/master/RemoteEncrypt.txt";
 #endif
+constexpr const char* kLocalBootstrapFile = "Bootstrap.json";
 
 using workthread::netutils::DirnamePath;
 using workthread::netutils::ExtractBaseAndPath;
@@ -197,6 +198,226 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 {
 	SetLauncherStatus(L"Fetching bootstrap configuration...");
 	std::cout << "FetchBootstrapConfig" << std::endl;
+
+	auto applyBootstrapRoot = [this](const Json::Value& root, const char* sourceTag) -> bool {
+		Json::Value content = root["content"];
+		if (!content.isObject()) {
+			content = root["download"];
+		}
+		if (!content.isObject()) {
+			std::cout << "Bootstrap JSON missing content/download object." << std::endl;
+			SetLauncherStatus(L"Failed: malformed bootstrap content.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-FIELD",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Bootstrap JSON missing content/download object",
+				"Expected root.content or root.download object.");
+			return false;
+		}
+
+		std::string versionManifestUrl = TrimAscii(content["version_manifest_url"].asString());
+		if (versionManifestUrl.empty()) {
+			versionManifestUrl = TrimAscii(content["version_dat_url"].asString());
+		}
+		if (versionManifestUrl.empty()) {
+			std::cout << "Bootstrap JSON missing version_manifest_url." << std::endl;
+			SetLauncherStatus(L"Failed: missing manifest URL in bootstrap.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-FIELD",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Bootstrap JSON missing version manifest URL",
+				"Neither version_manifest_url nor version_dat_url is present.");
+			return false;
+		}
+
+		std::string updateRootUrl = TrimAscii(content["update_package_root_url"].asString());
+		if (updateRootUrl.empty()) {
+			updateRootUrl = TrimAscii(content["runtime_root_url"].asString());
+		}
+		if (updateRootUrl.empty()) {
+			updateRootUrl = TrimAscii(content["update_root_url"].asString());
+		}
+
+		m_versionState.basePackageUrls = ReadStringArray(content, "base_package_urls");
+		if (m_versionState.basePackageUrls.empty()) {
+			const std::string singleBasePackageUrl = TrimAscii(content["base_package_url"].asString());
+			if (!singleBasePackageUrl.empty()) {
+				m_versionState.basePackageUrls.push_back(singleBasePackageUrl);
+			}
+		}
+
+		std::string versionBaseUrl;
+		std::string versionPath;
+		const bool versionManifestIsAbsolute = IsHttpUrl(versionManifestUrl);
+		if (versionManifestIsAbsolute) {
+			if (!ExtractBaseAndPath(versionManifestUrl, versionBaseUrl, versionPath)) {
+				std::cout << "Invalid version_manifest_url: " << versionManifestUrl << std::endl;
+				SetLauncherStatus(L"Failed: invalid manifest URL.");
+				LogUpdateError(
+					"UF-BOOTSTRAP-URL",
+					"LauncherUpdateCoordinator::FetchBootstrapConfig",
+					"Invalid version manifest URL format",
+					std::string("version_manifest_url=") + versionManifestUrl);
+				return false;
+			}
+			m_versionState.manifestPath = versionManifestUrl;
+		}
+
+		if (!updateRootUrl.empty() && IsHttpUrl(updateRootUrl)) {
+			if (!ExtractBaseAndPath(updateRootUrl, m_networkState.url, m_networkState.page)) {
+				std::cout << "Invalid update_package_root_url: " << updateRootUrl << std::endl;
+				SetLauncherStatus(L"Failed: invalid update root URL.");
+				LogUpdateError(
+					"UF-BOOTSTRAP-URL",
+					"LauncherUpdateCoordinator::FetchBootstrapConfig",
+					"Invalid update root URL format",
+					std::string("update_package_root_url=") + updateRootUrl);
+				return false;
+			}
+		}
+		else if (!updateRootUrl.empty()) {
+			if (!versionBaseUrl.empty()) {
+				m_networkState.url = versionBaseUrl;
+			}
+			else if (m_networkState.url.empty()) {
+				std::cout << "Relative update_package_root_url requires absolute version_manifest_url." << std::endl;
+				SetLauncherStatus(L"Failed: unresolved relative update URL.");
+				LogUpdateError(
+					"UF-BOOTSTRAP-URL",
+					"LauncherUpdateCoordinator::FetchBootstrapConfig",
+					"Relative update root cannot be resolved",
+					"update_package_root_url is relative and version manifest URL is not absolute.");
+				return false;
+			}
+			m_networkState.page = NormalizeRelativeUrlPath(updateRootUrl);
+			if (m_networkState.page.back() != '/') {
+				m_networkState.page.push_back('/');
+			}
+		}
+		else if (!versionBaseUrl.empty()) {
+			m_networkState.url = versionBaseUrl;
+			m_networkState.page = DirnamePath(versionPath);
+		}
+		else {
+			std::cout << "Bootstrap JSON cannot resolve download host/path." << std::endl;
+			SetLauncherStatus(L"Failed: cannot resolve download host.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-URL",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Bootstrap cannot resolve download host/path",
+				"Neither update root URL nor absolute version manifest base resolved.");
+			return false;
+		}
+
+		if (m_networkState.page.empty()) {
+			m_networkState.page = "/";
+		}
+		if (m_networkState.page.front() != '/') {
+			m_networkState.page.insert(m_networkState.page.begin(), '/');
+		}
+		if (m_networkState.page.back() != '/') {
+			m_networkState.page.push_back('/');
+		}
+		if (!versionManifestIsAbsolute) {
+			const bool rootedPath = !versionManifestUrl.empty() &&
+				(versionManifestUrl.front() == '/' || versionManifestUrl.front() == '\\');
+			if (rootedPath) {
+				m_versionState.manifestPath = NormalizeRelativeUrlPath(versionManifestUrl);
+			}
+			else {
+				m_versionState.manifestPath = JoinUrlPath(m_networkState.page, versionManifestUrl);
+			}
+		}
+		if (m_versionState.manifestPath.empty()) {
+			m_versionState.manifestPath = JoinUrlPath(m_networkState.page, "Version.dat");
+		}
+
+		if (m_versionState.basePackageUrls.empty()) {
+			std::cout << "Bootstrap JSON missing base_package_urls/base_package_url." << std::endl;
+			SetLauncherStatus(L"Failed: missing base package URL.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-FIELD",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Bootstrap missing base package URL list",
+				"base_package_urls/base_package_url fields are empty.");
+			return false;
+		}
+
+		Json::Value p2pJson = root["p2p"];
+		if (p2pJson.isObject()) {
+			std::lock_guard<std::mutex> lock(m_networkState.p2pMutex);
+
+			const std::string signalUrl = TrimAscii(p2pJson["signal_url"].asString());
+			if (!signalUrl.empty() && m_networkState.p2pSettings.signalEndpoint.empty()) {
+				m_networkState.p2pSettings.signalEndpoint = signalUrl;
+			}
+
+			const std::string signalToken = TrimAscii(p2pJson["signal_auth_token"].asString());
+			if (!signalToken.empty() && m_networkState.p2pSettings.signalAuthToken.empty()) {
+				m_networkState.p2pSettings.signalAuthToken = signalToken;
+			}
+
+			auto remoteStuns = ReadStringArray(p2pJson, "stun_servers");
+			if (!remoteStuns.empty()) {
+				MergeUnique(remoteStuns, m_networkState.p2pSettings.stunServers);
+				m_networkState.p2pSettings.stunServers = std::move(remoteStuns);
+			}
+		}
+
+		std::cout << "Bootstrap resolved (" << sourceTag << "): host=" << m_networkState.url
+			<< " updateRoot=" << m_networkState.page
+			<< " versionPath=" << m_versionState.manifestPath << std::endl;
+		SetLauncherStatus(L"Bootstrap configuration ready.");
+		return true;
+	};
+
+	const std::filesystem::path localBootstrapPath = std::filesystem::u8path(kLocalBootstrapFile);
+	std::error_code localExistsEc;
+	const bool hasLocalBootstrap = std::filesystem::exists(localBootstrapPath, localExistsEc) && !localExistsEc;
+	if (hasLocalBootstrap) {
+		std::ifstream localStream(localBootstrapPath, std::ios::binary);
+		if (!localStream.is_open()) {
+			std::cout << "Failed to open local bootstrap file: " << localBootstrapPath.string() << std::endl;
+			SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-LOCAL",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Cannot open local bootstrap file",
+				std::string("path=") + localBootstrapPath.string());
+			return false;
+		}
+
+		std::ostringstream oss;
+		oss << localStream.rdbuf();
+		std::string localJsonText = oss.str();
+		if (localJsonText.size() >= 3 &&
+			static_cast<unsigned char>(localJsonText[0]) == 0xEF &&
+			static_cast<unsigned char>(localJsonText[1]) == 0xBB &&
+			static_cast<unsigned char>(localJsonText[2]) == 0xBF) {
+			localJsonText.erase(0, 3);
+		}
+
+		Json::Value localRoot;
+		Json::Reader reader;
+		if (!reader.parse(localJsonText, localRoot) || !localRoot.isObject()) {
+			std::cout << "Local Bootstrap.json is not valid JSON." << std::endl;
+			SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
+			LogUpdateError(
+				"UF-BOOTSTRAP-JSON",
+				"LauncherUpdateCoordinator::FetchBootstrapConfig",
+				"Local bootstrap payload parse failed",
+				std::string("path=") + localBootstrapPath.string());
+			return false;
+		}
+
+		LogUpdateInfo(
+			"UF-BOOTSTRAP-SOURCE",
+			"LauncherUpdateCoordinator::FetchBootstrapConfig",
+			"Using local bootstrap configuration",
+			std::string("path=") + localBootstrapPath.string());
+		return applyBootstrapRoot(localRoot, "local");
+	}
+
 	httplib::Client cli{ kBootstrapHost };
 	auto res = cli.Get(kBootstrapPath);
 	if (!res || res->status != 200) {
@@ -232,9 +453,9 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 	}
 	const std::string decrypted = DecryptConfigPayload(ciphertext);
 
-	Json::Value root;
+	Json::Value remoteRoot;
 	Json::Reader reader;
-	if (!reader.parse(decrypted, root) || !root.isObject()) {
+	if (!reader.parse(decrypted, remoteRoot) || !remoteRoot.isObject()) {
 		std::cout << "Bootstrap payload is not valid JSON." << std::endl;
 		SetLauncherStatus(L"Failed: invalid bootstrap configuration.");
 		LogUpdateError(
@@ -245,175 +466,12 @@ bool LauncherUpdateCoordinator::FetchBootstrapConfig()
 		return false;
 	}
 
-	Json::Value content = root["content"];
-	if (!content.isObject()) {
-		content = root["download"];
-	}
-	if (!content.isObject()) {
-		std::cout << "Bootstrap JSON missing content/download object." << std::endl;
-		SetLauncherStatus(L"Failed: malformed bootstrap content.");
-		LogUpdateError(
-			"UF-BOOTSTRAP-FIELD",
-			"LauncherUpdateCoordinator::FetchBootstrapConfig",
-			"Bootstrap JSON missing content/download object",
-			"Expected root.content or root.download object.");
-		return false;
-	}
-
-	std::string versionManifestUrl = TrimAscii(content["version_manifest_url"].asString());
-	if (versionManifestUrl.empty()) {
-		versionManifestUrl = TrimAscii(content["version_dat_url"].asString());
-	}
-	if (versionManifestUrl.empty()) {
-		std::cout << "Bootstrap JSON missing version_manifest_url." << std::endl;
-		SetLauncherStatus(L"Failed: missing manifest URL in bootstrap.");
-		LogUpdateError(
-			"UF-BOOTSTRAP-FIELD",
-			"LauncherUpdateCoordinator::FetchBootstrapConfig",
-			"Bootstrap JSON missing version manifest URL",
-			"Neither version_manifest_url nor version_dat_url is present.");
-		return false;
-	}
-
-	std::string updateRootUrl = TrimAscii(content["update_package_root_url"].asString());
-	if (updateRootUrl.empty()) {
-		updateRootUrl = TrimAscii(content["runtime_root_url"].asString());
-	}
-	if (updateRootUrl.empty()) {
-		updateRootUrl = TrimAscii(content["update_root_url"].asString());
-	}
-
-	m_versionState.basePackageUrls = ReadStringArray(content, "base_package_urls");
-	if (m_versionState.basePackageUrls.empty()) {
-		const std::string singleBasePackageUrl = TrimAscii(content["base_package_url"].asString());
-		if (!singleBasePackageUrl.empty()) {
-			m_versionState.basePackageUrls.push_back(singleBasePackageUrl);
-		}
-	}
-
-	std::string versionBaseUrl;
-	std::string versionPath;
-	const bool versionManifestIsAbsolute = IsHttpUrl(versionManifestUrl);
-	if (versionManifestIsAbsolute) {
-		if (!ExtractBaseAndPath(versionManifestUrl, versionBaseUrl, versionPath)) {
-			std::cout << "Invalid version_manifest_url: " << versionManifestUrl << std::endl;
-			SetLauncherStatus(L"Failed: invalid manifest URL.");
-			LogUpdateError(
-				"UF-BOOTSTRAP-URL",
-				"LauncherUpdateCoordinator::FetchBootstrapConfig",
-				"Invalid version manifest URL format",
-				std::string("version_manifest_url=") + versionManifestUrl);
-			return false;
-		}
-		m_versionState.manifestPath = versionManifestUrl;
-	}
-
-	if (!updateRootUrl.empty() && IsHttpUrl(updateRootUrl)) {
-		if (!ExtractBaseAndPath(updateRootUrl, m_networkState.url, m_networkState.page)) {
-			std::cout << "Invalid update_package_root_url: " << updateRootUrl << std::endl;
-			SetLauncherStatus(L"Failed: invalid update root URL.");
-			LogUpdateError(
-				"UF-BOOTSTRAP-URL",
-				"LauncherUpdateCoordinator::FetchBootstrapConfig",
-				"Invalid update root URL format",
-				std::string("update_package_root_url=") + updateRootUrl);
-			return false;
-		}
-	}
-	else if (!updateRootUrl.empty()) {
-		if (!versionBaseUrl.empty()) {
-			m_networkState.url = versionBaseUrl;
-		}
-		else if (m_networkState.url.empty()) {
-			std::cout << "Relative update_package_root_url requires absolute version_manifest_url." << std::endl;
-			SetLauncherStatus(L"Failed: unresolved relative update URL.");
-			LogUpdateError(
-				"UF-BOOTSTRAP-URL",
-				"LauncherUpdateCoordinator::FetchBootstrapConfig",
-				"Relative update root cannot be resolved",
-				"update_package_root_url is relative and version manifest URL is not absolute.");
-			return false;
-		}
-		m_networkState.page = NormalizeRelativeUrlPath(updateRootUrl);
-		if (m_networkState.page.back() != '/') {
-			m_networkState.page.push_back('/');
-		}
-	}
-	else if (!versionBaseUrl.empty()) {
-		m_networkState.url = versionBaseUrl;
-		m_networkState.page = DirnamePath(versionPath);
-	}
-	else {
-		std::cout << "Bootstrap JSON cannot resolve download host/path." << std::endl;
-		SetLauncherStatus(L"Failed: cannot resolve download host.");
-		LogUpdateError(
-			"UF-BOOTSTRAP-URL",
-			"LauncherUpdateCoordinator::FetchBootstrapConfig",
-			"Bootstrap cannot resolve download host/path",
-			"Neither update root URL nor absolute version manifest base resolved.");
-		return false;
-	}
-
-	if (m_networkState.page.empty()) {
-		m_networkState.page = "/";
-	}
-	if (m_networkState.page.front() != '/') {
-		m_networkState.page.insert(m_networkState.page.begin(), '/');
-	}
-	if (m_networkState.page.back() != '/') {
-		m_networkState.page.push_back('/');
-	}
-	if (!versionManifestIsAbsolute) {
-		const bool rootedPath = !versionManifestUrl.empty() &&
-			(versionManifestUrl.front() == '/' || versionManifestUrl.front() == '\\');
-		if (rootedPath) {
-			m_versionState.manifestPath = NormalizeRelativeUrlPath(versionManifestUrl);
-		}
-		else {
-			m_versionState.manifestPath = JoinUrlPath(m_networkState.page, versionManifestUrl);
-		}
-	}
-	if (m_versionState.manifestPath.empty()) {
-		m_versionState.manifestPath = JoinUrlPath(m_networkState.page, "Version.dat");
-	}
-
-	if (m_versionState.basePackageUrls.empty()) {
-		std::cout << "Bootstrap JSON missing base_package_urls/base_package_url." << std::endl;
-		SetLauncherStatus(L"Failed: missing base package URL.");
-		LogUpdateError(
-			"UF-BOOTSTRAP-FIELD",
-			"LauncherUpdateCoordinator::FetchBootstrapConfig",
-			"Bootstrap missing base package URL list",
-			"base_package_urls/base_package_url fields are empty.");
-		return false;
-	}
-
-	Json::Value p2pJson = root["p2p"];
-	if (p2pJson.isObject()) {
-		std::lock_guard<std::mutex> lock(m_networkState.p2pMutex);
-
-		const std::string signalUrl = TrimAscii(p2pJson["signal_url"].asString());
-		if (!signalUrl.empty() && m_networkState.p2pSettings.signalEndpoint.empty()) {
-			m_networkState.p2pSettings.signalEndpoint = signalUrl;
-		}
-
-		const std::string signalToken = TrimAscii(p2pJson["signal_auth_token"].asString());
-		if (!signalToken.empty() && m_networkState.p2pSettings.signalAuthToken.empty()) {
-			m_networkState.p2pSettings.signalAuthToken = signalToken;
-		}
-
-		auto remoteStuns = ReadStringArray(p2pJson, "stun_servers");
-		if (!remoteStuns.empty()) {
-			MergeUnique(remoteStuns, m_networkState.p2pSettings.stunServers);
-			m_networkState.p2pSettings.stunServers = std::move(remoteStuns);
-		}
-	}
-
-	std::cout << "Bootstrap resolved: host=" << m_networkState.url
-		<< " updateRoot=" << m_networkState.page
-		<< " versionPath=" << m_versionState.manifestPath << std::endl;
-	SetLauncherStatus(L"Bootstrap configuration ready.");
-	return true;
+	LogUpdateInfo(
+		"UF-BOOTSTRAP-SOURCE",
+		"LauncherUpdateCoordinator::FetchBootstrapConfig",
+		"Using remote bootstrap configuration",
+		std::string("host=") + kBootstrapHost + ", path=" + kBootstrapPath);
+	return applyBootstrapRoot(remoteRoot, "remote");
 }
 
 bool LauncherUpdateCoordinator::RefreshRemoteVersionManifest()
